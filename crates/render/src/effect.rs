@@ -6,7 +6,7 @@
 //! 这和设计文档 `03-渲染与视觉.md` §3 的 DrawOp 思路一致，只是把"指令列表"换成了
 //! "直接往 Canvas 上画"——少一层中间表示，效果代码更好读。
 
-use tiny_skia::{LineJoin, PathBuilder, Stroke};
+use tiny_skia::{LineCap, LineJoin, PathBuilder, Stroke};
 
 use crate::{Canvas, Ctx};
 
@@ -96,6 +96,70 @@ impl Effect for Glow {
             color[3] = alpha.round() as u8;
             canvas.stroke_round_rect(target.inflate(spread), self.radius, self.width, color);
         }
+    }
+}
+/// 四角准星：在目标四角外侧画四个直角，像取景框。
+///
+/// 和 `ring` 的区别是它不包围目标，只标出四角——用来强调"就是要这一小块"，
+/// 而且不会和目标自身的边框打架。
+#[derive(Clone, Copy, Debug)]
+pub struct Crosshair {
+    /// 每个直角臂的长度。
+    pub len: f32,
+    pub width: f32,
+    /// 直角拐点离目标边界的距离。
+    pub offset: f32,
+    pub color: [u8; 4],
+}
+
+impl Default for Crosshair {
+    fn default() -> Self {
+        Self {
+            len: 12.0,
+            width: 2.0,
+            offset: 3.0,
+            color: [255, 59, 48, 235],
+        }
+    }
+}
+
+impl Effect for Crosshair {
+    fn name(&self) -> &'static str {
+        "crosshair"
+    }
+
+    fn margin(&self) -> f32 {
+        self.offset + self.len + self.width
+    }
+
+    fn draw(&self, canvas: &mut Canvas<'_>, target: RectF, _ctx: &Ctx<'_>) {
+        let mut builder = PathBuilder::new();
+        // 四个角：(角点 x, 角点 y, 朝外 x 方向, 朝外 y 方向)
+        let corners = [
+            (target.x, target.y, -1.0_f32, -1.0_f32),
+            (target.right(), target.y, 1.0, -1.0),
+            (target.x, target.bottom(), -1.0, 1.0),
+            (target.right(), target.bottom(), 1.0, 1.0),
+        ];
+        for (cx, cy, dx, dy) in corners {
+            let corner_x = cx + dx * self.offset;
+            let corner_y = cy + dy * self.offset;
+            let far_x = corner_x + dx * self.len;
+            let far_y = corner_y + dy * self.len;
+            builder.move_to(corner_x, corner_y);
+            builder.line_to(corner_x, far_y);
+            builder.move_to(corner_x, corner_y);
+            builder.line_to(far_x, corner_y);
+        }
+
+        let Some(path) = builder.finish() else { return };
+        let stroke = Stroke {
+            width: self.width,
+            line_cap: LineCap::Round,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        canvas.stroke_path(&path, &stroke, self.color);
     }
 }
 /// 从卡片指向目标的连线，末端带箭头。
@@ -335,6 +399,15 @@ pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effec
         .iter()
         .filter_map(|name| match name.as_str() {
             "ring" => Some(ring(style)),
+            "crosshair" => {
+                let base = Crosshair::default();
+                Some(Box::new(Crosshair {
+                    len: base.len * style.scale,
+                    width: base.width * style.scale,
+                    offset: base.offset * style.scale,
+                    color: style.accent,
+                }) as Box<dyn Effect>)
+            }
             "arrow" => {
                 let base = Arrow::default();
                 Some(Box::new(Arrow {
@@ -384,7 +457,7 @@ fn ring(style: &EffectStyle) -> Box<dyn Effect> {
 }
 
 /// 已知效果名，用于错误提示与文档。
-pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush", "glow", "arrow"];
+pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush", "glow", "arrow", "crosshair"];
 
 #[cfg(test)]
 mod tests {
@@ -420,6 +493,26 @@ mod tests {
         let brush_one = build_effects(&["brush".to_string()], &base);
         let brush_two = build_effects(&["brush".to_string()], &doubled);
         assert!((brush_two[0].margin() - brush_one[0].margin() * 2.0).abs() < 0.01);
+    }
+    #[test]
+    fn crosshair_marks_corners_and_leaves_the_inside_alone() {
+        let target = RectF::new(40.0, 40.0, 80.0, 50.0);
+        let effects = build_effects(&["crosshair".to_string()], &EffectStyle::default());
+        let buf = render_frame(200, 140, &[target], &effects, &Ctx::default(), 1.0).unwrap();
+
+        let mut corner = 0;
+        for y in 30..60 {
+            for x in 30..60 {
+                let idx = ((y * 200 + x) * 4 + 3) as usize;
+                if buf[idx] > 60 {
+                    corner += 1;
+                }
+            }
+        }
+        assert!(corner > 10, "左上角应该有准星，实际 {corner}");
+
+        let center = ((65 * 200 + 80) * 4 + 3) as usize;
+        assert_eq!(buf[center], 0, "目标内部不该被填充");
     }
     #[test]
     fn arrow_connects_card_and_far_target() {

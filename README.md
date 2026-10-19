@@ -21,7 +21,7 @@ AI:   capture → 看截图 → 量出矩形 → show
 | --- | --- |
 | 截图 + 坐标映射 | AI 在图上量像素，工具负责换算到屏幕物理像素 |
 | 高亮 + 文案 | 整屏压暗、目标留亮，配标题 / 正文 / 快捷键提示 |
-| 多种视觉效果 | `ring` 描边、`brush` 手绘圈、`glow` 外发光、`arrow` 指向连线 |
+| 多种视觉效果 | `ring` 描边、`brush` 手绘圈、`glow` 外发光、`arrow` 指向连线、`crosshair` 四角准星 |
 | 多目标 + 步骤 | 一次标出好几处，各自带编号角标 |
 | 自动消失 | 按文案长度估算停留时间，也可以常驻 |
 | 随时关掉 | 卡片关闭按钮 / `Ctrl+Alt+Esc` / `spotlight clear` |
@@ -100,7 +100,7 @@ spotlight show --file scene.json
 --text / --title   正文 / 标题
 --step <1/3>       步骤标记（可重复，按序对应 --rect）
 --shortcut "Ctrl+B" 快捷键提示
---effect <名字>    ring / brush / glow / arrow（可重复）
+--effect <名字>    ring / brush / glow / arrow / crosshair（可重复）
 --timeout <秒|0>   0 表示常驻；缺省按字数估算
 --placement <方位> auto / top / bottom / left / right（放不下会自动换边）
 --dry-run          只校验坐标与参数、返回换算结果，不真的显示

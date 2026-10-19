@@ -77,7 +77,7 @@ capture 参数:
 show 参数:
   --file <路径>        场景 JSON（targets/text/effects/timeout…）
   --rect x,y,w,h       目标矩形（可重复给多个目标）
-  --effect <名字>      效果：ring（默认）/ brush，可重复
+  --effect <名字>      效果：ring（默认）/ brush / glow / arrow / crosshair，可重复
   --capture <id>       坐标来自哪张截图（推荐）
   --space screen       或：坐标已经是屏幕物理像素
   --text <文案>        显示在卡片里
