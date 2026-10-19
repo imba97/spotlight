@@ -6,13 +6,18 @@ mod daemon;
 mod probe;
 
 use std::process::exit;
+use std::time::Instant;
 
 use serde_json::json;
 use spotlight_core::protocol::{
     CaptureParams, ClearParams, Method, Request, Response, ShowParams, TargetSpec, codes,
 };
+use spotlight_platform::win::{enable_dpi_awareness, primary_scale, screen_size};
 
 fn main() {
+    // 必须在任何窗口/坐标读取之前：否则 125% 缩放下所有坐标都会被虚拟化。
+    enable_dpi_awareness();
+
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = argv.first() else {
         usage();
@@ -26,6 +31,7 @@ fn main() {
         "capture" => cmd_capture(&argv[1..]),
         "clear" => cmd_clear(&argv[1..]),
         "status" => cmd_status(&argv[1..]),
+        "doctor" => cmd_doctor(&argv[1..]),
         "help" | "-h" | "--help" => {
             usage();
             0
@@ -52,6 +58,7 @@ fn usage() {
   show     高亮一个区域
   clear    清除当前画面
   status   查看守护进程与当前画面
+  doctor   自检（屏幕、DPI、守护进程、热键）
   daemon   前台运行守护进程（内部用）
   probe    技术验证探针
 
@@ -170,6 +177,95 @@ fn cmd_status(rest: &[String]) -> i32 {
     };
     let req = Request::new(1, Method::Status, None);
     dispatch(req, parsed.flag("json"))
+}
+
+/// 自检：把"出问题时最需要知道的几件事"一次报出来。
+fn cmd_doctor(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+
+    let (screen_w, screen_h) = screen_size();
+    let scale = primary_scale();
+    let home = data_home();
+
+    let started = Instant::now();
+    let response = client::send(&Request::new(1, Method::Status, None));
+    let ping_ms = started.elapsed().as_millis();
+
+    let reachable = matches!(&response, Ok(r) if r.ok);
+    let result = response.as_ref().ok().and_then(|r| r.result.as_ref());
+    let daemon_version = result
+        .and_then(|r| r.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("-");
+    let hotkey = result
+        .and_then(|r| r.get("hotkey"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_scene = result
+        .and_then(|r| r.get("scene"))
+        .is_some_and(|v| !v.is_null());
+
+    if parsed.flag("json") {
+        println!(
+            "{}",
+            json!({
+                "ok": reachable,
+                "version": spotlight_core::VERSION,
+                "screen": { "width": screen_w, "height": screen_h, "scale": scale },
+                "home": home.display().to_string(),
+                "daemon": {
+                    "reachable": reachable,
+                    "version": daemon_version,
+                    "hotkey": hotkey,
+                    "ping_ms": ping_ms,
+                }
+            })
+        );
+        return 0;
+    }
+
+    println!("spotlight {}", spotlight_core::VERSION);
+    println!("屏幕      : {screen_w}×{screen_h} @ {:.0}%", scale * 100.0);
+    println!("数据目录  : {}", home.display());
+    if reachable {
+        println!("守护进程  : 正常（{ping_ms} ms，v{daemon_version}）");
+        if has_scene {
+            println!(
+                "关闭热键  : {}",
+                if hotkey {
+                    "已注册（Ctrl+Alt+Esc）"
+                } else {
+                    "注册失败，可能被其他程序占用；画面仍可用关闭按钮关掉"
+                }
+            );
+        } else {
+            println!("关闭热键  : 空闲不占用，出现画面时才注册");
+        }
+    } else {
+        println!("守护进程  : 连不上");
+        match &response {
+            Ok(resp) => {
+                if let Some(err) = &resp.error {
+                    println!("错误      : [{}] {}", err.code, err.message);
+                }
+            }
+            Err(err) => println!("错误      : {err}"),
+        }
+    }
+    0
+}
+
+fn data_home() -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("SPOTLIGHT_HOME") {
+        return std::path::PathBuf::from(home);
+    }
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("spotlight")
 }
 
 fn usage_error(message: &str) -> i32 {

@@ -198,6 +198,9 @@ pub struct StatusResult {
     pub alive: bool,
     pub version: String,
     pub uptime_ms: u64,
+    /// 关闭热键是否注册成功（被占用时为 false）。
+    #[serde(default)]
+    pub hotkey: bool,
     pub scene: Option<SceneSummary>,
 }
 

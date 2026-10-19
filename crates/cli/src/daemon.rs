@@ -58,6 +58,8 @@ const TICK_ANIM_MS: u32 = 16;
 const ANIM_MS: f32 = 120.0;
 const TICK_IDLE_MS: u32 = 5000;
 const IDLE_EXIT: Duration = Duration::from_secs(180);
+/// 悬停最多帮用户暂停这么久，之后照常倒计时，避免遮罩永远关不掉。
+const PAUSE_CAP: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CAPTURES: usize = 20;
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
@@ -85,6 +87,7 @@ struct Active {
     last_tick: Instant,
     shown_at: Instant,
     paused: bool,
+    paused_total: Duration,
     card_screen: Option<Rect>,
     geom: Geom,
     text: Option<TextBitmap>,
@@ -101,6 +104,7 @@ struct State {
     should_exit: bool,
     captures: VecDeque<(String, CaptureMap)>,
     next_capture: u64,
+    hotkey: bool,
 }
 
 impl State {
@@ -113,6 +117,7 @@ impl State {
             should_exit: false,
             captures: VecDeque::new(),
             next_capture: 1,
+            hotkey: false,
         }
     }
 
@@ -150,10 +155,14 @@ impl State {
             // 悬停文案：暂停倒计时。只在有倒计时时才值得轮询。
             if active.total.is_some() {
                 let (cx, cy) = cursor_pos();
-                active.paused = active
+                let hovering = active
                     .card_screen
                     .is_some_and(|card| card.contains_point(cx, cy));
-                if !active.paused {
+                // 暂停有上限：超过 60 秒就不再暂停，避免遮罩永远不消失。
+                active.paused = hovering && active.paused_total < PAUSE_CAP;
+                if active.paused {
+                    active.paused_total += elapsed;
+                } else {
                     active.remaining = active.remaining.saturating_sub(elapsed);
                 }
                 if active.remaining.is_zero() {
@@ -181,6 +190,10 @@ impl State {
             self.last_activity = Instant::now();
         }
         set_close_hit(None);
+        if self.hotkey {
+            message::unregister_dismiss_hotkey();
+            self.hotkey = false;
+        }
         self.arm();
     }
 
@@ -196,6 +209,7 @@ impl State {
             alive: true,
             version: spotlight_core::VERSION.to_string(),
             uptime_ms: self.started.elapsed().as_millis() as u64,
+            hotkey: self.hotkey,
             scene: self.active.as_ref().map(|a| SceneSummary {
                 key: a.key.clone(),
                 targets: 1,
@@ -415,6 +429,7 @@ impl State {
             last_tick: Instant::now(),
             shown_at: Instant::now(),
             paused: false,
+            paused_total: Duration::ZERO,
             card_screen: card_rect,
             geom,
             text: text_bitmap,
@@ -459,6 +474,8 @@ impl State {
         self.active = Some(active);
         self.last_activity = Instant::now();
         self.arm();
+        // 只在有画面时占用热键，画面消失立刻归还。
+        self.hotkey = message::register_dismiss_hotkey();
 
         Ok(ShowResult {
             scene: scene.key.clone().unwrap_or_else(|| "s-1".into()),
@@ -674,6 +691,7 @@ pub fn run() -> i32 {
                 let _ = job.reply.send(resp);
             }
             Event::Timer => state.tick(),
+            Event::Hotkey => state.clear_all(),
         }
         if state.should_exit {
             break;
