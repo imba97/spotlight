@@ -211,6 +211,9 @@ pub struct ShowResult {
     /// 实际生效的效果链。
     #[serde(default)]
     pub effects: Vec<String>,
+    /// 渲染时的关键决策，便于调用方自查"框为什么在这儿"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<ShowDebug>,
     /// 非致命问题，例如文案被截断。调用方应当转告用户。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -248,6 +251,22 @@ pub struct SceneSummary {
     pub targets: usize,
     pub has_text: bool,
     pub remaining_ms: Option<u64>,
+}
+
+/// 一次渲染的关键决策。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShowDebug {
+    /// 卡片落在哪块屏上。
+    pub monitor: String,
+    /// 该屏的 DPI 缩放。
+    pub scale: f32,
+    /// 实际采用的方位（小写）。
+    pub placement: String,
+    /// 卡片在屏幕坐标系下的矩形。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<[i32; 4]>,
+    /// 字号（物理像素，已按 DPI 缩放）。
+    pub font_px: i32,
 }
 
 /// 重新读取配置的结果。

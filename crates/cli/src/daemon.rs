@@ -15,7 +15,7 @@ use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
     CaptureImage, CaptureInfo, CaptureParams, CaptureSummary, CapturesResult, ClearParams,
     ErrorBody, Method, MonitorInfo, RectInfo, ReloadResult, Request, Response, SceneSummary,
-    SegmentInfo, ShowParams, ShowResult, StatusResult, codes,
+    SegmentInfo, ShowDebug, ShowParams, ShowResult, StatusResult, codes,
 };
 use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
@@ -580,7 +580,7 @@ impl State {
         let body_h = text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
         let content_h = title_block + body_h + key_block;
 
-        let card_rect = (content_w > 0).then(|| {
+        let card_placed = (content_w > 0).then(|| {
             place_preferring(
                 target_union,
                 Size::new(
@@ -591,8 +591,18 @@ impl State {
                 px(CARD_GAP),
                 preference,
             )
-            .rect
         });
+        let card_rect = card_placed.map(|placed| placed.rect);
+
+        let debug = ShowDebug {
+            monitor: host.name.clone(),
+            scale: host.scale,
+            placement: card_placed
+                .map(|placed| format!("{:?}", placed.placement).to_lowercase())
+                .unwrap_or_else(|| "none".to_string()),
+            card: card_rect.map(|card| [card.x, card.y, card.w, card.h]),
+            font_px,
+        };
 
         let mut union = rects
             .iter()
@@ -698,6 +708,7 @@ impl State {
                 targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
                 effects: effect_names.clone(),
                 warnings,
+                debug: Some(debug),
             });
         }
 
@@ -784,6 +795,7 @@ impl State {
             targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
             effects: effect_names,
             warnings,
+            debug: Some(debug),
         })
     }
 
