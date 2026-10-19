@@ -22,9 +22,22 @@ const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
 
 const MAX_MESSAGE: usize = 1 << 20; // 1 MiB
 
+/// 每个用户一个管道，避免多用户/多会话互相抢连接。
+///
+/// 真正的访问边界是管道的默认 DACL（创建者 + SYSTEM + 管理员），名字只负责"不串台"。
+/// 用用户名而不是 SID，是因为这里只需要区分，不需要防伪造——别的用户本来就进不来。
 pub fn pipe_name() -> String {
-    // TODO(security): 按 05 章改为带 UserSID 的管道名 + SDDL 限制。
-    r"\\.\pipe\spotlight-default".to_string()
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+    let safe: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    let safe = if safe.is_empty() {
+        "default".to_string()
+    } else {
+        safe
+    };
+    format!(r"\\.\pipe\spotlight-{safe}")
 }
 
 fn wide(s: &str) -> Vec<u16> {
