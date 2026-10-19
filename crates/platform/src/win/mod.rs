@@ -32,8 +32,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowLongPtrW, HTCLIENT, HTTRANSPARENT, LWA_ALPHA, MA_NOACTIVATE, MSG,
     PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE,
     SetLayeredWindowAttributes, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "SpotlightOverlayWindow";
@@ -48,6 +49,8 @@ static REGISTER: Once = Once::new();
 static CLOSE_HIT: Mutex<Option<Rect>> = Mutex::new(None);
 /// 用户点了关闭按钮。主线程在 tick 里消费。
 static DISMISS_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 显示器配置变了（分辨率/DPI/插拔）。旧坐标全部作废。
+static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_close_hit(rect: Option<Rect>) {
     if let Ok(mut guard) = CLOSE_HIT.lock() {
@@ -57,6 +60,11 @@ pub fn set_close_hit(rect: Option<Rect>) {
 
 pub fn take_dismiss_request() -> bool {
     DISMISS_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+/// 消费一次「显示器变了」事件。分辨率、DPI、插拔都算。
+pub fn take_display_change() -> bool {
+    DISPLAY_CHANGED.swap(false, Ordering::SeqCst)
 }
 
 pub fn cursor_pos() -> (i32, i32) {
@@ -84,6 +92,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 HTTRANSPARENT as LRESULT
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            // 分辨率 / DPI / 显示器插拔：当前画面对应的坐标已经不可信
+            WM_DISPLAYCHANGE | WM_DPICHANGED => {
+                DISPLAY_CHANGED.store(true, Ordering::SeqCst);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_LBUTTONUP => {
                 let hit = CLOSE_HIT.lock().ok().and_then(|guard| *guard);
                 if let Some(rect) = hit {

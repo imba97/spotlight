@@ -10,7 +10,7 @@ use serde_json::json;
 use spotlight_core::geom::{ImageRect, Rect, RectF, ScreenRect};
 use spotlight_core::layout::{Size, place};
 use spotlight_core::mapping::{CaptureId, CaptureMap, Segment};
-use spotlight_core::mask::subtract;
+use spotlight_core::mask;
 use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
     CaptureImage, CaptureInfo, CaptureParams, CaptureSummary, CapturesResult, ClearParams,
@@ -29,6 +29,7 @@ use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
     MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
+    take_display_change,
 };
 use spotlight_render::{
     Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
@@ -92,6 +93,7 @@ struct Active {
     shown_at: Instant,
     paused: bool,
     paused_total: Duration,
+    animate: bool,
     card_screen: Option<Rect>,
     geom: Geom,
     title: Option<TextBitmap>,
@@ -154,6 +156,10 @@ impl State {
     }
 
     fn tick(&mut self) {
+        if take_display_change() {
+            self.clear_all();
+            return;
+        }
         if take_dismiss_request() {
             self.clear_all();
             return;
@@ -165,9 +171,12 @@ impl State {
             let now = Instant::now();
             let elapsed = now.saturating_duration_since(active.last_tick);
             active.last_tick = now;
-            let opacity = (now.saturating_duration_since(active.shown_at).as_secs_f32() * 1000.0
-                / ANIM_MS)
-                .clamp(0.0, 1.0);
+            let opacity = if active.animate {
+                (now.saturating_duration_since(active.shown_at).as_secs_f32() * 1000.0 / ANIM_MS)
+                    .clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
 
             // 悬停文案：暂停倒计时。只在有倒计时时才值得轮询。
             if active.total.is_some() {
@@ -646,6 +655,11 @@ impl State {
                 })
             }),
         };
+        let same_key = match (&p.key, self.active.as_ref()) {
+            (Some(new_key), Some(active)) => active.key.as_deref() == Some(new_key.as_str()),
+            _ => false,
+        };
+
         let timeout = resolve(scene.timeout, scene.text());
 
         // 只校验：把换算后的屏幕矩形和预计时长报回去，不建任何窗口。
@@ -669,6 +683,7 @@ impl State {
             shown_at: Instant::now(),
             paused: false,
             paused_total: Duration::ZERO,
+            animate: !same_key,
             card_screen: card_rect,
             geom,
             title: title_bitmap,
@@ -681,7 +696,8 @@ impl State {
             _masks: Vec::new(),
         };
 
-        let Some(bgra) = render_active(&active, 0.0) else {
+        let initial_opacity = if same_key { 1.0 } else { 0.0 };
+        let Some(bgra) = render_active(&active, initial_opacity) else {
             return Err(internal("渲染失败"));
         };
 
@@ -696,7 +712,14 @@ impl State {
             if !rects.iter().any(|r| r.intersect(monitor.bounds).is_some()) {
                 continue;
             }
-            for r in &subtract(monitor.bounds, &holes) {
+            let plan = mask::plan(monitor.bounds, &holes);
+            if plan.fallback_fullscreen {
+                return Err(
+                    ErrorBody::new(codes::BAD_PARAMS, "场景太复杂：遮罩要拆成太多窗口")
+                        .with_hint("一次 show 的目标控制在 8 个以内，或者拆成几次"),
+                );
+            }
+            for r in &plan.rects {
                 let window = MaskWindow::new(*r, dim_alpha).map_err(internal)?;
                 masks.push(window);
             }
