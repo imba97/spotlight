@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use spotlight_core::geom::{ImageRect, Rect, RectF, ScreenRect};
-use spotlight_core::layout::{Size, place};
+use spotlight_core::layout::{Placement, Preference, Size, place_preferring};
 use spotlight_core::mapping::{CaptureId, CaptureMap, Segment};
 use spotlight_core::mask;
 use spotlight_core::monitor::monitor_for_rect;
@@ -448,6 +448,20 @@ impl State {
         let px = |value: i32| ((value as f32) * scale).round() as i32;
         let dip = |value: f32| value * scale;
 
+        let preference = match p.placement.as_deref() {
+            None | Some("auto") => Preference::Auto,
+            Some("top") => Preference::Side(Placement::Top),
+            Some("bottom") => Preference::Side(Placement::Bottom),
+            Some("left") => Preference::Side(Placement::Left),
+            Some("right") => Preference::Side(Placement::Right),
+            Some(other) => {
+                return Err(
+                    ErrorBody::new(codes::BAD_PARAMS, format!("未知的摆放方位: {other}"))
+                        .with_hint("可用: auto / top / bottom / left / right"),
+                );
+            }
+        };
+
         let style = EffectStyle {
             accent: self.cfg.accent,
             ring_width: self.cfg.ring_width,
@@ -567,7 +581,7 @@ impl State {
         let content_h = title_block + body_h + key_block;
 
         let card_rect = (content_w > 0).then(|| {
-            place(
+            place_preferring(
                 target_union,
                 Size::new(
                     content_w + pad + px(CARD_PADDING_RIGHT),
@@ -575,6 +589,7 @@ impl State {
                 ),
                 work,
                 px(CARD_GAP),
+                preference,
             )
             .rect
         });

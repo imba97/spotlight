@@ -102,6 +102,7 @@ spotlight show --file scene.json
 --shortcut "Ctrl+B" 快捷键提示
 --effect <名字>    ring / brush / glow / arrow（可重复）
 --timeout <秒|0>   0 表示常驻；缺省按字数估算
+--placement <方位> auto / top / bottom / left / right（放不下会自动换边）
 --dry-run          只校验坐标与参数、返回换算结果，不真的显示
 --key <id>         相同 key 原地替换，不重播入场动画
 ```

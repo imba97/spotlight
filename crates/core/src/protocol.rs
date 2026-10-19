@@ -167,6 +167,9 @@ pub struct ShowParams {
     /// 可选的键盘快捷键提示，例如 Ctrl+B。
     #[serde(default)]
     pub shortcut: Option<String>,
+    /// 卡片摆放偏好：auto / top / bottom / left / right。
+    #[serde(default)]
+    pub placement: Option<String>,
     /// 只校验不显示。show 会返回换算后的屏幕矩形，但不会创建任何窗口。
     #[serde(default)]
     pub dry_run: bool,

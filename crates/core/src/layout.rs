@@ -29,6 +29,15 @@ pub enum Placement {
     BottomRight,
 }
 
+/// 调用方对摆放方位的偏好。`Auto` 就是原来的打分选择。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Preference {
+    #[default]
+    Auto,
+    /// 先试这一边；放不下再退回自动选择。
+    Side(Placement),
+}
+
 /// 优先级顺序，也是同分时的取舍顺序。
 const ORDER: [Placement; 8] = [
     Placement::Bottom,
@@ -76,11 +85,35 @@ pub fn candidate(target: Rect, size: Size, gap: i32, placement: Placement) -> Re
     }
 }
 
+fn ordered(preference: Preference) -> [Placement; 8] {
+    match preference {
+        Preference::Auto => ORDER,
+        Preference::Side(preferred) => {
+            let mut list = ORDER;
+            if let Some(index) = list.iter().position(|item| *item == preferred) {
+                list[..=index].rotate_right(1);
+            }
+            list
+        }
+    }
+}
+
 pub fn place(target: Rect, size: Size, work: Rect, gap: i32) -> Placed {
+    place_preferring(target, size, work, gap, Preference::Auto)
+}
+
+pub fn place_preferring(
+    target: Rect,
+    size: Size,
+    work: Rect,
+    gap: i32,
+    preference: Preference,
+) -> Placed {
+    let order = ordered(preference);
     // 1. 找一个既在 work 内、又不压住目标的方位，按优先级取第一个。
     //    候选框先沿垂直轴贴回 work，这样贴着屏幕边缘的目标也能把卡片放在正下方，
     //    而不是被迫换到侧面（tooltip 的常见行为）。
-    for placement in ORDER {
+    for placement in order {
         let rect = candidate(target, size, gap, placement).shift_into(work);
         if work.contains_rect(rect) && !rect.intersects(target) {
             return Placed {
@@ -94,7 +127,7 @@ pub fn place(target: Rect, size: Size, work: Rect, gap: i32) -> Placed {
 
     // 2. 都不合适：取溢出面积最小的，再夹进 work。
     let mut best: Option<(i64, Placement, Rect)> = None;
-    for placement in ORDER {
+    for placement in order {
         let rect = candidate(target, size, gap, placement);
         let overflow = rect.outside_area(work);
         if best.is_none_or(|(o, _, _)| overflow < o) {
@@ -118,6 +151,40 @@ mod tests {
     const WORK: Rect = Rect::new(0, 0, 1920, 1080);
     const SIZE: Size = Size::new(300, 100);
 
+    #[test]
+    fn preference_puts_the_requested_side_first() {
+        let target = Rect::new(860, 490, 200, 100);
+        let top = place_preferring(target, SIZE, WORK, 8, Preference::Side(Placement::Top));
+        assert_eq!(top.placement, Placement::Top);
+        assert_eq!(top.rect.bottom(), target.y - 8);
+
+        let right = place_preferring(target, SIZE, WORK, 8, Preference::Side(Placement::Right));
+        assert_eq!(right.placement, Placement::Right);
+        assert_eq!(right.rect.x, target.right() + 8);
+
+        let left = place_preferring(target, SIZE, WORK, 8, Preference::Side(Placement::Left));
+        assert_eq!(left.placement, Placement::Left);
+        assert_eq!(left.rect.right(), target.x - 8);
+    }
+
+    #[test]
+    fn preference_falls_back_when_the_side_does_not_fit() {
+        // 目标贴着屏幕顶端，上方塞不下 100 高的卡片
+        let target = Rect::new(860, 4, 200, 100);
+        let placed = place_preferring(target, SIZE, WORK, 8, Preference::Side(Placement::Top));
+        assert!(placed.fits);
+        assert_eq!(placed.placement, Placement::Bottom);
+        assert!(!placed.overlaps_target);
+    }
+
+    #[test]
+    fn auto_matches_the_default_choice() {
+        let target = Rect::new(860, 490, 200, 100);
+        assert_eq!(
+            place_preferring(target, SIZE, WORK, 8, Preference::Auto),
+            place(target, SIZE, WORK, 8)
+        );
+    }
     #[test]
     fn centered_target_prefers_bottom() {
         let target = Rect::new(860, 490, 200, 100);

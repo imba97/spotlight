@@ -85,6 +85,7 @@ show 参数:
   --step <如 1/3>      步骤标记；可重复，按序对应 --rect
   --shortcut <Ctrl+B> 快捷键提示，显示成卡片底部的键帽
   --timeout <秒|auto>  0 表示常驻；缺省按字数估算
+  --placement <方位>   auto / top / bottom / left / right（放不下会自动回退）
   --dry-run            只校验坐标和参数，不真的显示
   --key <id>           相同 key 原地替换
   --json               机器可读输出"
@@ -154,6 +155,9 @@ fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(),
     }
     if let Some(shortcut) = parsed.value("shortcut") {
         params.shortcut = Some(shortcut.to_string());
+    }
+    if let Some(placement) = parsed.value("placement") {
+        params.placement = Some(placement.to_string());
     }
     if parsed.flag("dry-run") {
         params.dry_run = true;
