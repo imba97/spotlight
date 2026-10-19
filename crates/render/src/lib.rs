@@ -43,6 +43,17 @@ pub struct TextLayer<'a> {
     pub color: [u8; 4],
 }
 
+/// 卡片里的快捷键提示，画成一个小键帽。
+#[derive(Clone, Copy, Debug)]
+pub struct Keycap<'a> {
+    pub rect: RectF,
+    pub radius: f32,
+    /// RGBA
+    pub bg: [u8; 4],
+    pub border: [u8; 4],
+    pub text: TextLayer<'a>,
+}
+
 /// 目标角上的步骤标记（"1"、"2"、"1/3"）。
 #[derive(Clone, Copy, Debug)]
 pub struct Badge<'a> {
@@ -62,6 +73,7 @@ pub struct Ctx<'a> {
     pub text: Option<TextLayer<'a>>,
     pub progress: Option<Progress>,
     pub close: Option<CloseMark>,
+    pub keycap: Option<Keycap<'a>>,
     pub badges: &'a [Badge<'a>],
 }
 
@@ -183,6 +195,26 @@ pub fn render_frame(
                 effect.draw(&mut canvas, *target, ctx);
             }
         }
+    }
+
+    if let Some(keycap) = ctx.keycap {
+        if let Some(path) = sk_round_rect(keycap.rect, keycap.radius) {
+            let fill = paint(keycap.bg);
+            pixmap.fill_path(
+                &path,
+                &fill,
+                tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+            let border = paint(keycap.border);
+            let stroke = Stroke {
+                width: 1.0,
+                ..Stroke::default()
+            };
+            pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+        }
+        blend_text(&mut pixmap, &keycap.text);
     }
 
     for badge in ctx.badges {
@@ -437,6 +469,33 @@ mod tests {
         assert_eq!(buf[glyph], 255);
         assert_eq!(buf[glyph + 1], 255);
         assert_eq!(buf[glyph + 2], 255);
+    }
+    #[test]
+    fn keycap_draws_fill_and_text() {
+        let mask = vec![255u8; 4];
+        let ctx = Ctx {
+            keycap: Some(Keycap {
+                rect: RectF::new(10.0, 10.0, 40.0, 18.0),
+                radius: 4.0,
+                bg: [255, 255, 255, 26],
+                border: [255, 255, 255, 120],
+                text: TextLayer {
+                    rect: RectF::new(14.0, 14.0, 2.0, 2.0),
+                    mask: &mask,
+                    mask_width: 2,
+                    mask_height: 2,
+                    color: [255, 255, 255, 255],
+                },
+            }),
+            ..Ctx::default()
+        };
+        let buf = render_frame(80, 40, &[], &[], &ctx, 1.0).unwrap();
+        // 键帽内部是半透明底色
+        let fill = ((18 * 80 + 40) * 4) as usize;
+        assert!(buf[fill + 3] > 10 && buf[fill + 3] < 60, "底色应当很淡");
+        // 文字位置被白色覆盖
+        let glyph = ((14 * 80 + 14) * 4) as usize;
+        assert_eq!(buf[glyph + 3], 255);
     }
     #[test]
     fn opacity_scales_premultiplied_channels() {

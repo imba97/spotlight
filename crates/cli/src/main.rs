@@ -79,6 +79,7 @@ show 参数:
   --text <文案>        显示在卡片里
   --title <标题>       卡片标题
   --step <如 1/3>      步骤标记；可重复，按序对应 --rect
+  --shortcut <Ctrl+B> 快捷键提示，显示成卡片底部的键帽
   --timeout <秒|auto>  0 表示常驻；缺省按字数估算
   --key <id>           相同 key 原地替换
   --json               机器可读输出"
@@ -145,6 +146,9 @@ fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(),
     }
     if let Some(key) = parsed.value("key").or(parsed.value("id")) {
         params.key = Some(key.to_string());
+    }
+    if let Some(shortcut) = parsed.value("shortcut") {
+        params.shortcut = Some(shortcut.to_string());
     }
     if let Some(raw) = parsed.value("timeout") {
         params.timeout = match raw {

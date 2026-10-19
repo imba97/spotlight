@@ -38,6 +38,20 @@ impl Theme {
         }
     }
 
+    pub fn keycap_bg(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 26],
+            Theme::Light => [0, 0, 0, 18],
+        }
+    }
+
+    pub fn keycap_border(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 56],
+            Theme::Light => [0, 0, 0, 36],
+        }
+    }
+
     pub fn close(self) -> [u8; 4] {
         match self {
             Theme::Dark => [255, 255, 255, 150],

@@ -162,6 +162,9 @@ pub struct ShowParams {
     pub title: Option<String>,
     #[serde(default)]
     pub step: Option<String>,
+    /// 可选的键盘快捷键提示，例如 Ctrl+B。
+    #[serde(default)]
+    pub shortcut: Option<String>,
     /// 效果链名字；空 = 默认光环。显式给出时**替换**默认组合。
     #[serde(default)]
     pub effects: Vec<String>,

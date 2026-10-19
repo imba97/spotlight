@@ -30,7 +30,7 @@ use spotlight_platform::win::{
     MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
 };
 use spotlight_render::{
-    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, Progress, TextLayer, build_effects,
+    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, Keycap, Progress, TextLayer, build_effects,
     render_frame,
 };
 
@@ -75,6 +75,8 @@ struct Geom {
     card: Option<Rect>,
     close: Option<Rect>,
     badges: Vec<(Rect, TextBitmap)>,
+    keycap: Option<Rect>,
+    keycap_text: Option<Rect>,
     title_at: Option<(f32, f32)>,
     text_at: Option<(f32, f32)>,
 }
@@ -93,6 +95,7 @@ struct Active {
     geom: Geom,
     title: Option<TextBitmap>,
     text: Option<TextBitmap>,
+    keycap: Option<TextBitmap>,
     effects: Vec<Box<dyn Effect>>,
     accent: [u8; 4],
     theme: Theme,
@@ -451,6 +454,26 @@ impl State {
             .filter(|c| !c.text.trim().is_empty())
             .and_then(|c| render_text(&c.text, text_width, font_px));
 
+        // 快捷键提示：卡片底部一个小键帽。
+        let key_pad_x = px(8);
+        let key_pad_y = px(4);
+        let key_gap = px(6);
+        let shortcut_bitmap = p
+            .shortcut
+            .as_ref()
+            .filter(|keys| !keys.trim().is_empty())
+            .and_then(|keys| {
+                render_text(
+                    keys,
+                    px(180).max(40) as u32,
+                    px(self.cfg.font_px - 4).max(8),
+                )
+            });
+        let key_block = shortcut_bitmap
+            .as_ref()
+            .map(|tb| tb.height as i32 + key_pad_y * 2 + key_gap)
+            .unwrap_or(0);
+
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
         let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
         let title_block = title_bitmap
@@ -464,7 +487,8 @@ impl State {
             .chain(text_bitmap.as_ref().map(|tb| tb.width as i32))
             .max()
             .unwrap_or(0);
-        let content_h = title_block + text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
+        let body_h = text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
+        let content_h = title_block + body_h + key_block;
 
         let card_rect = (content_w > 0).then(|| {
             place(
@@ -518,6 +542,26 @@ impl State {
                 .into_iter()
                 .map(|(rect, bitmap)| (offset(rect), bitmap))
                 .collect(),
+            keycap: card_rect.and_then(|card| {
+                shortcut_bitmap.as_ref().map(|tb| {
+                    offset(Rect::new(
+                        card.x + pad,
+                        card.y + pad + title_block + body_h + key_gap,
+                        tb.width as i32 + key_pad_x * 2,
+                        tb.height as i32 + key_pad_y * 2,
+                    ))
+                })
+            }),
+            keycap_text: card_rect.and_then(|card| {
+                shortcut_bitmap.as_ref().map(|tb| {
+                    offset(Rect::new(
+                        card.x + pad + key_pad_x,
+                        card.y + pad + title_block + body_h + key_gap + key_pad_y,
+                        tb.width as i32,
+                        tb.height as i32,
+                    ))
+                })
+            }),
             title_at: card_rect.and_then(|card| {
                 title_bitmap.as_ref().map(|_| {
                     (
@@ -551,6 +595,7 @@ impl State {
             geom,
             title: title_bitmap,
             text: text_bitmap,
+            keycap: shortcut_bitmap,
             effects,
             accent: self.cfg.accent,
             theme: self.cfg.theme,
@@ -689,6 +734,22 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
             radius: active.geom.card_radius,
             bg: active.theme.card_bg(),
         }),
+        keycap: match (&active.keycap, active.geom.keycap, active.geom.keycap_text) {
+            (Some(tb), Some(pill), Some(text_rect)) => Some(Keycap {
+                rect: RectF::from_rect(pill),
+                radius: (pill.h as f32) * 0.3,
+                bg: active.theme.keycap_bg(),
+                border: active.theme.keycap_border(),
+                text: TextLayer {
+                    rect: RectF::from_rect(text_rect),
+                    mask: &tb.alpha,
+                    mask_width: tb.width,
+                    mask_height: tb.height,
+                    color: active.theme.text(),
+                },
+            }),
+            _ => None,
+        },
         badges: &badges,
         title: match (&active.title, active.geom.title_at) {
             (Some(tb), Some((x, y))) => Some(TextLayer {
