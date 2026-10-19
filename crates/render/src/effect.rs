@@ -194,7 +194,7 @@ mod tests {
         let target = RectF::new(20.0, 20.0, 60.0, 30.0);
         let effects = build_effects(&[]);
         let ctx = Ctx::default();
-        let buf = render_frame(100, 80, &[target], &effects, &ctx).unwrap();
+        let buf = render_frame(100, 80, &[target], &effects, &ctx, 1.0).unwrap();
         // 目标内部应当是空的
         assert_eq!(solid_alpha(&buf, 100, 50, 35), 0);
         // 目标外、光环中心线上应当是实心的
@@ -206,7 +206,7 @@ mod tests {
         let target = RectF::new(40.0, 40.0, 60.0, 40.0);
         let effects = build_effects(&["brush".to_string()]);
         let ctx = Ctx::default();
-        let buf = render_frame(160, 140, &[target], &effects, &ctx).unwrap();
+        let buf = render_frame(160, 140, &[target], &effects, &ctx, 1.0).unwrap();
 
         // 圈上至少有一批不透明像素，且中间是空的
         let painted = buf.chunks_exact(4).filter(|px| px[3] > 100).count();

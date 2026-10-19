@@ -52,6 +52,10 @@ const CLOSE_HIT: i32 = 28;
 const CLOSE_MARGIN: i32 = 8;
 
 const TICK_ACTIVE_MS: u32 = 100;
+/// 入场动画期间用 60fps 的节奏。
+const TICK_ANIM_MS: u32 = 16;
+/// 入场淡入时长（毫秒）。
+const ANIM_MS: f32 = 120.0;
 const TICK_IDLE_MS: u32 = 5000;
 const IDLE_EXIT: Duration = Duration::from_secs(180);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -79,6 +83,7 @@ struct Active {
     total: Option<Duration>,
     remaining: Duration,
     last_tick: Instant,
+    shown_at: Instant,
     paused: bool,
     card_screen: Option<Rect>,
     geom: Geom,
@@ -112,10 +117,13 @@ impl State {
     }
 
     fn arm(&mut self) {
-        let want = if self.active.is_some() {
-            TICK_ACTIVE_MS
-        } else {
-            TICK_IDLE_MS
+        let want = match &self.active {
+            // 入场动画期间用高刷新率，动画结束立刻回到 100ms。
+            Some(active) if active.shown_at.elapsed().as_secs_f32() * 1000.0 < ANIM_MS => {
+                TICK_ANIM_MS
+            }
+            Some(_) => TICK_ACTIVE_MS,
+            None => TICK_IDLE_MS,
         };
         if self.timer_ms != want {
             message::stop_timer();
@@ -135,6 +143,9 @@ impl State {
             let now = Instant::now();
             let elapsed = now.saturating_duration_since(active.last_tick);
             active.last_tick = now;
+            let opacity = (now.saturating_duration_since(active.shown_at).as_secs_f32() * 1000.0
+                / ANIM_MS)
+                .clamp(0.0, 1.0);
 
             // 悬停文案：暂停倒计时。只在有倒计时时才值得轮询。
             if active.total.is_some() {
@@ -147,9 +158,12 @@ impl State {
                 }
                 if active.remaining.is_zero() {
                     finished = true;
-                } else {
-                    repaint(active);
                 }
+            }
+
+            // 动画期间每帧重画；动画结束后只有倒计时进度条需要刷新。
+            if !finished && (opacity < 1.0 || active.total.is_some()) {
+                repaint(active, opacity);
             }
         }
 
@@ -399,6 +413,7 @@ impl State {
             total: timeout,
             remaining: timeout.unwrap_or_default(),
             last_tick: Instant::now(),
+            shown_at: Instant::now(),
             paused: false,
             card_screen: card_rect,
             geom,
@@ -408,7 +423,7 @@ impl State {
             _masks: Vec::new(),
         };
 
-        let Some(bgra) = render_active(&active) else {
+        let Some(bgra) = render_active(&active, 0.0) else {
             return Err(ErrorBody::new(codes::INTERNAL, "渲染失败"));
         };
 
@@ -492,7 +507,7 @@ fn capture_dir() -> PathBuf {
         .join("captures")
 }
 
-fn render_active(active: &Active) -> Option<Vec<u8>> {
+fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
     let progress = match active.total {
         Some(total) if total.as_secs_f32() > 0.0 => Some(Progress {
             value: (active.remaining.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0),
@@ -537,11 +552,12 @@ fn render_active(active: &Active) -> Option<Vec<u8>> {
         &targets,
         &active.effects,
         &ctx,
+        opacity,
     )
 }
 
-fn repaint(active: &Active) {
-    if let Some(bgra) = render_active(active) {
+fn repaint(active: &Active, opacity: f32) {
+    if let Some(bgra) = render_active(active, opacity) {
         let g = active.geom.union;
         active.effect.set_pixels(g.x, g.y, g.w, g.h, &bgra);
     }

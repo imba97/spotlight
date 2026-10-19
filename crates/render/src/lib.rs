@@ -147,6 +147,7 @@ pub fn render_frame(
     targets: &[RectF],
     effects: &[Box<dyn Effect>],
     ctx: &Ctx<'_>,
+    opacity: f32,
 ) -> Option<Vec<u8>> {
     if width == 0 || height == 0 {
         return None;
@@ -178,7 +179,7 @@ pub fn render_frame(
         draw_close(&mut pixmap, &close);
     }
 
-    Some(to_premultiplied_bgra(pixmap.data()))
+    Some(to_premultiplied_bgra(pixmap.data(), opacity))
 }
 
 fn draw_card(pixmap: &mut Pixmap, card: &Card) {
@@ -289,10 +290,17 @@ fn blend_text(pixmap: &mut Pixmap, text: &TextLayer<'_>) {
 }
 
 /// tiny-skia 输出的是预乘 RGBA，Windows 要的是预乘 BGRA。
-fn to_premultiplied_bgra(rgba: &[u8]) -> Vec<u8> {
+fn to_premultiplied_bgra(rgba: &[u8], opacity: f32) -> Vec<u8> {
+    let k = opacity.clamp(0.0, 1.0);
     let mut out = rgba.to_vec();
     for px in out.chunks_exact_mut(4) {
         px.swap(0, 2);
+        if k < 1.0 {
+            // 预乘空间：四个通道一起缩放才不会破坏 alpha <= 通道值的关系
+            for c in px.iter_mut() {
+                *c = (*c as f32 * k).round() as u8;
+            }
+        }
     }
     out
 }
@@ -315,7 +323,7 @@ mod tests {
             }),
             ..Ctx::default()
         };
-        let buf = render_frame(64, 64, &[], &[], &ctx).unwrap();
+        let buf = render_frame(64, 64, &[], &[], &ctx, 1.0).unwrap();
         assert!(alpha_at(&buf, 64, 32, 32) > 200, "卡片内部应不透明");
         assert_eq!(alpha_at(&buf, 64, 2, 2), 0, "卡片外部应透明");
     }
@@ -333,7 +341,7 @@ mod tests {
             }),
             ..Ctx::default()
         };
-        let buf = render_frame(32, 32, &[], &[], &ctx).unwrap();
+        let buf = render_frame(32, 32, &[], &[], &ctx, 1.0).unwrap();
         let idx = ((10 * 32 + 10) * 4) as usize;
         assert_eq!(buf[idx + 3], 255);
         assert_eq!(buf[idx], 255);
@@ -355,7 +363,7 @@ mod tests {
             ..Ctx::default()
         };
         let bar_y = 10 + 60 - 2 - 2 + 1;
-        let buf = render_frame(220, 80, &[], &[], &full).unwrap();
+        let buf = render_frame(220, 80, &[], &[], &full, 1.0).unwrap();
         let idx = ((bar_y * 220 + 190) * 4) as usize;
         assert_eq!(buf[idx + 2], 255, "满格时右端是进度条的红色");
 
@@ -366,12 +374,31 @@ mod tests {
             }),
             ..full
         };
-        let buf = render_frame(220, 80, &[], &[], &short).unwrap();
+        let buf = render_frame(220, 80, &[], &[], &short, 1.0).unwrap();
         assert_ne!(buf[idx + 2], 255, "快结束时右端回到卡片底色");
     }
 
     #[test]
+    fn opacity_scales_premultiplied_channels() {
+        let ctx = Ctx {
+            card: Some(Card {
+                rect: RectF::new(0.0, 0.0, 32.0, 32.0),
+                radius: 0.0,
+                bg: [255, 255, 255, 255],
+            }),
+            ..Ctx::default()
+        };
+        let full = render_frame(32, 32, &[], &[], &ctx, 1.0).unwrap();
+        let half = render_frame(32, 32, &[], &[], &ctx, 0.5).unwrap();
+        let idx = ((16 * 32 + 16) * 4) as usize;
+        assert_eq!(full[idx + 3], 255);
+        assert!((i32::from(half[idx + 3]) - 127).abs() <= 2, "alpha 应减半");
+        // 预乘空间里 RGB 必须跟着 alpha 一起缩，否则会出现"发亮的半透明"
+        assert!((i32::from(half[idx]) - 127).abs() <= 2, "RGB 应同比例缩放");
+    }
+
+    #[test]
     fn degenerate_frame_is_rejected() {
-        assert!(render_frame(0, 10, &[], &[], &Ctx::default()).is_none());
+        assert!(render_frame(0, 10, &[], &[], &Ctx::default(), 1.0).is_none());
     }
 }
