@@ -29,12 +29,12 @@ use windows_sys::Win32::UI::HiDpi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GetCursorPos,
-    GetSystemMetrics, GetWindowLongPtrW, HTCLIENT, HTTRANSPARENT, LWA_ALPHA, MA_NOACTIVATE, MSG,
-    PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE,
-    SetLayeredWindowAttributes, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    GetSystemMetrics, GetWindowLongPtrW, HTCLIENT, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA,
+    LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
+    SM_CYSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+    ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "SpotlightOverlayWindow";
@@ -49,6 +49,8 @@ static REGISTER: Once = Once::new();
 static CLOSE_HIT: Mutex<Option<Rect>> = Mutex::new(None);
 /// 用户点了关闭按钮。主线程在 tick 里消费。
 static DISMISS_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 需要拦截点击的遮罩窗口。只有它们返回 HTCLIENT，其余一律放行。
+static BLOCKING: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 /// 显示器配置变了（分辨率/DPI/插拔）。旧坐标全部作废。
 static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 
@@ -105,13 +107,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         return HTCLIENT as LRESULT;
                     }
                 }
-                // 带 WS_EX_TRANSPARENT 的遮罩要放行（默认行为）；
-                // 没带的说明是"拦截点击"模式，这里必须让鼠标停在自己身上。
-                let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-                if style & WS_EX_TRANSPARENT != 0 {
-                    HTTRANSPARENT as LRESULT
-                } else {
+                // 只有显式登记为"拦截点击"的遮罩才吃鼠标事件；
+                // 卡片窗口必须放行，否则会挡住别的区域。
+                let blocking = BLOCKING
+                    .lock()
+                    .map(|set| set.contains(&(hwnd as isize)))
+                    .unwrap_or(false);
+                if blocking {
                     HTCLIENT as LRESULT
+                } else {
+                    HTTRANSPARENT as LRESULT
                 }
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
@@ -149,7 +154,8 @@ fn ensure_class() -> Result<(), String> {
             cbWndExtra: 0,
             hInstance: GetModuleHandleW(std::ptr::null()),
             hIcon: std::ptr::null_mut(),
-            hCursor: std::ptr::null_mut(),
+            // 有光标，Windows 才会在鼠标进入时设成箭头；否则会沿用上一个应用留下的光标。
+            hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
             hbrBackground: GetStockObject(BLACK_BRUSH),
             lpszMenuName: std::ptr::null(),
             lpszClassName: name.as_ptr(),
@@ -213,6 +219,10 @@ impl MaskWindow {
             if hwnd.is_null() {
                 return Err("CreateWindowExW failed".into());
             }
+            // 登记成"吃点击"的窗口，WM_NCHITTEST 才会返回 HTCLIENT。
+            if block && let Ok(mut set) = BLOCKING.lock() {
+                set.push(hwnd as isize);
+            }
             // 先设 alpha 再显示，避免闪一下全黑。
             SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -257,6 +267,9 @@ impl MaskWindow {
 
 impl Drop for MaskWindow {
     fn drop(&mut self) {
+        if let Ok(mut set) = BLOCKING.lock() {
+            set.retain(|item| *item != self.hwnd as isize);
+        }
         unsafe {
             DestroyWindow(self.hwnd);
         }

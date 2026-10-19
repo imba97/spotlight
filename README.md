@@ -80,8 +80,8 @@ spotlight show --file scene.json
 可直接运行的例子在 [`examples/scene.json`](examples/scene.json)（单步）和
 [`examples/tour.json`](examples/tour.json)（多步）。
 
-多步流程用 `steps` 数组：点中当前步骤的高亮区域就自动跳下一步，卡片最后一行会写
-「下一步：…」，最后一步点完自动关闭。遮罩默认拦住点击，想放行加 `--click-through`。
+多步流程用 `steps` 数组：按热键（默认 `Ctrl+Alt+Esc`）跳到下一步，卡片最后一行会写
+「下一步：…」，最后一步时热键就是关闭。遮罩默认拦住点击，想放行加 `--click-through`。
 ## 命令
 
 | 命令 | 作用 |

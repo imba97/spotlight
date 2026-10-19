@@ -28,8 +28,8 @@ use spotlight_platform::win::process::SingleInstance;
 use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
-    MaskWindow, cursor_pos, enable_dpi_awareness, mouse_buttons, set_close_hit,
-    take_dismiss_request, take_display_change,
+    MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
+    take_display_change,
 };
 use spotlight_render::{
     Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
@@ -125,7 +125,6 @@ struct State {
     /// 多步流程里还没播的步骤。
     queue: VecDeque<ShowParams>,
     /// 上一帧的鼠标按键状态，用来识别“刚按下”的边沿。
-    buttons: u8,
     next_capture: u64,
     hotkey: bool,
     cfg: Config,
@@ -138,7 +137,6 @@ impl State {
             started: Instant::now(),
             last_activity: Instant::now(),
             queue: VecDeque::new(),
-            buttons: 0,
             active: None,
             timer_ms: 0,
             should_exit: false,
@@ -174,25 +172,6 @@ impl State {
         if take_dismiss_request() {
             self.clear_all();
             return;
-        }
-
-        // 点中当前步骤的高亮区域 → 前进到下一步。
-        // 用轮询而不是鼠标钩子：钩子要"看见并吞掉"事件，而这里的点击必须照常落到下层应用上。
-        let buttons = mouse_buttons();
-        let clicked = buttons != 0 && self.buttons == 0;
-        self.buttons = buttons;
-        if clicked {
-            let (mx, my) = cursor_pos();
-            let hit = self.active.as_ref().is_some_and(|active| {
-                active.geom.targets.iter().any(|rect| {
-                    rect.translated(active.geom.union.x, active.geom.union.y)
-                        .contains_point(mx, my)
-                })
-            });
-            if hit {
-                self.advance();
-                return;
-            }
         }
 
         let pause_cap = Duration::from_secs(self.cfg.pause_cap_secs);
@@ -1241,7 +1220,8 @@ pub fn run() -> i32 {
                 let _ = job.reply.send(resp);
             }
             Event::Timer => state.tick(),
-            Event::Hotkey => state.clear_all(),
+            // 多步流程里热键是"下一步"，没有下一步才关掉。
+            Event::Hotkey => state.advance(),
         }
         if state.should_exit {
             break;
