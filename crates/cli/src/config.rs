@@ -9,6 +9,43 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+/// 卡片配色。深色卡片配白字，浅色卡片配深字。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub fn card_bg(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [27, 27, 31, 240],
+            Theme::Light => [250, 250, 252, 246],
+        }
+    }
+
+    pub fn text(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 255],
+            Theme::Light => [24, 24, 28, 255],
+        }
+    }
+
+    pub fn title(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 168],
+            Theme::Light => [24, 24, 28, 180],
+        }
+    }
+
+    pub fn close(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 150],
+            Theme::Light => [24, 24, 28, 150],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     /// RGBA 强调色，光环 / 圈画 / 进度条都用它。
@@ -19,6 +56,8 @@ pub struct Config {
     pub ring_width: f32,
     pub font_px: i32,
     pub max_text_width: u32,
+    /// 卡片配色。
+    pub theme: Theme,
     /// 悬停暂停的累计上限。
     pub pause_cap_secs: u64,
     /// 没显式指定 `--effect` 时用哪组效果。
@@ -36,6 +75,7 @@ impl Default for Config {
             max_text_width: 336,
             pause_cap_secs: 60,
             default_effects: vec!["ring".to_string()],
+            theme: Theme::Dark,
         }
     }
 }
@@ -70,6 +110,8 @@ struct RawVisual {
     radius: Option<f32>,
     #[serde(default)]
     ring_width: Option<f32>,
+    #[serde(default)]
+    theme: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -153,6 +195,13 @@ fn apply(config: &mut Config, raw: &Raw, warnings: &mut Vec<String>) {
     }
     if let Some(width) = raw.visual.ring_width {
         config.ring_width = width.clamp(1.0, 10.0);
+    }
+    if let Some(text) = &raw.visual.theme {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "dark" => config.theme = Theme::Dark,
+            "light" => config.theme = Theme::Light,
+            other => warnings.push(format!("visual.theme 只能是 dark 或 light，收到: {other}")),
+        }
     }
     if let Some(font) = raw.callout.font_px {
         config.font_px = font.clamp(8, 48);
@@ -273,6 +322,27 @@ cap_seconds = 30
         assert_eq!(loaded.config, Config::default());
         assert!(loaded.note.unwrap().contains("解析失败"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn theme_is_parsed_with_fallback() {
+        let path = write_temp("theme", "[visual]\ntheme = \"light\"\n");
+        assert_eq!(load(&path).config.theme, Theme::Light);
+        let _ = std::fs::remove_file(&path);
+
+        let path = write_temp("theme-bad", "[visual]\ntheme = \"neon\"\n");
+        let loaded = load(&path);
+        assert_eq!(loaded.config.theme, Theme::Dark);
+        assert!(loaded.note.unwrap().contains("theme"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn light_theme_flips_contrast() {
+        let bg = Theme::Light.card_bg();
+        let text = Theme::Light.text();
+        assert!(bg[0] > 200, "浅色卡片应当很亮");
+        assert!(text[0] < 60, "浅色主题的文字应当很暗");
     }
 
     #[test]

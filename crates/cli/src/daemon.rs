@@ -34,12 +34,11 @@ use spotlight_render::{
     render_frame,
 };
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, Theme};
 use crate::paths;
 
 /// 洞相对目标的 padding。
 const PAD: i32 = 6;
-const CARD_BG: [u8; 4] = [27, 27, 31, 240];
 const CARD_RADIUS: f32 = 10.0;
 const CARD_PADDING: i32 = 12;
 /// 标题行与正文之间的间距。
@@ -94,6 +93,7 @@ struct Active {
     text: Option<TextBitmap>,
     effects: Vec<Box<dyn Effect>>,
     accent: [u8; 4],
+    theme: Theme,
     effect: EffectWindow,
     _masks: Vec<MaskWindow>,
 }
@@ -540,6 +540,7 @@ impl State {
             text: text_bitmap,
             effects,
             accent: self.cfg.accent,
+            theme: self.cfg.theme,
             effect: EffectWindow::new(union).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?,
             _masks: Vec::new(),
         };
@@ -673,7 +674,7 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
         card: active.geom.card.map(|c| Card {
             rect: RectF::from_rect(c),
             radius: CARD_RADIUS,
-            bg: CARD_BG,
+            bg: active.theme.card_bg(),
         }),
         badges: &badges,
         title: match (&active.title, active.geom.title_at) {
@@ -682,7 +683,7 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
                 mask: &tb.alpha,
                 mask_width: tb.width,
                 mask_height: tb.height,
-                color: [255, 255, 255, 168],
+                color: active.theme.title(),
             }),
             _ => None,
         },
@@ -692,14 +693,14 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
                 mask: &tb.alpha,
                 mask_width: tb.width,
                 mask_height: tb.height,
-                color: [255, 255, 255, 255],
+                color: active.theme.text(),
             }),
             _ => None,
         },
         progress,
         close: active.geom.close.map(|c| CloseMark {
             rect: RectF::from_rect(c),
-            color: [255, 255, 255, 150],
+            color: active.theme.close(),
         }),
     };
 
