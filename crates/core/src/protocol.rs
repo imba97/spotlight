@@ -37,6 +37,7 @@ pub enum Method {
     Clear,
     Status,
     Capture,
+    Captures,
     Ping,
 }
 
@@ -219,6 +220,21 @@ pub struct StatusResult {
     pub scene: Option<SceneSummary>,
 }
 
+/// 守护进程当前持有的截图。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptureSummary {
+    pub capture: String,
+    pub width: u32,
+    pub height: u32,
+    /// 距离截图创建过了多久。
+    pub age_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapturesResult {
+    pub captures: Vec<CaptureSummary>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SceneSummary {
     pub key: Option<String>,
@@ -353,6 +369,21 @@ mod tests {
         assert!(err.is_err());
     }
 
+    #[test]
+    fn captures_result_round_trips() {
+        let result = CapturesResult {
+            captures: vec![CaptureSummary {
+                capture: "c-1".into(),
+                width: 1280,
+                height: 720,
+                age_ms: 1500,
+            }],
+        };
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains("c-1"));
+        let back: CapturesResult = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, result);
+    }
     #[test]
     fn response_omits_empty_fields() {
         let ok = Response::ok(9, serde_json::json!({"scene":"s-1"}));

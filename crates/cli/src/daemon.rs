@@ -13,9 +13,9 @@ use spotlight_core::mapping::{CaptureId, CaptureMap, Segment};
 use spotlight_core::mask::subtract;
 use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
-    CaptureImage, CaptureInfo, CaptureParams, ClearParams, ErrorBody, Method, MonitorInfo,
-    RectInfo, Request, Response, SceneSummary, SegmentInfo, ShowParams, ShowResult, StatusResult,
-    codes,
+    CaptureImage, CaptureInfo, CaptureParams, CaptureSummary, CapturesResult, ClearParams,
+    ErrorBody, Method, MonitorInfo, RectInfo, Request, Response, SceneSummary, SegmentInfo,
+    ShowParams, ShowResult, StatusResult, codes,
 };
 use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
@@ -103,13 +103,18 @@ struct Active {
     _masks: Vec<MaskWindow>,
 }
 
+struct CaptureEntry {
+    map: CaptureMap,
+    created: Instant,
+}
+
 struct State {
     started: Instant,
     last_activity: Instant,
     active: Option<Active>,
     timer_ms: u32,
     should_exit: bool,
-    captures: VecDeque<(String, CaptureMap)>,
+    captures: VecDeque<CaptureEntry>,
     next_capture: u64,
     hotkey: bool,
     cfg: Config,
@@ -211,8 +216,23 @@ impl State {
     fn find_capture(&self, id: &str) -> Option<&CaptureMap> {
         self.captures
             .iter()
-            .find(|(key, _)| key == id)
-            .map(|(_, map)| map)
+            .find(|entry| entry.map.id.0 == id)
+            .map(|entry| &entry.map)
+    }
+
+    fn captures(&self) -> CapturesResult {
+        CapturesResult {
+            captures: self
+                .captures
+                .iter()
+                .map(|entry| CaptureSummary {
+                    capture: entry.map.id.0.clone(),
+                    width: entry.map.image_size.0,
+                    height: entry.map.image_size.1,
+                    age_ms: entry.created.elapsed().as_millis() as u64,
+                })
+                .collect(),
+        }
     }
 
     fn status(&self) -> StatusResult {
@@ -261,10 +281,15 @@ impl State {
             monitors: monitors.clone(),
             segments: vec![Segment::new(monitor.id, image_rect, monitor.bounds)],
         };
-        self.captures.push_back((id.clone(), map));
+        self.captures.push_back(CaptureEntry {
+            map,
+            created: Instant::now(),
+        });
         while self.captures.len() > MAX_CAPTURES {
-            if let Some((old, _)) = self.captures.pop_front() {
-                let _ = std::fs::remove_file(paths::captures_dir().join(format!("{old}.png")));
+            if let Some(old) = self.captures.pop_front() {
+                let _ = std::fs::remove_file(
+                    paths::captures_dir().join(format!("{}.png", old.map.id.0)),
+                );
             }
         }
 
@@ -837,6 +862,10 @@ fn handle(state: &mut State, req: Request) -> Response {
                 Ok(info) => Response::ok(id, serde_json::to_value(info).unwrap_or(json!(null))),
                 Err(err) => Response::err(id, err),
             }
+        }
+        Method::Captures => {
+            let result = state.captures();
+            Response::ok(id, serde_json::to_value(result).unwrap_or(json!(null)))
         }
         Method::Clear => {
             if let Err(err) = req.parse_params::<ClearParams>() {

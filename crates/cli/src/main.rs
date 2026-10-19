@@ -32,6 +32,7 @@ fn main() {
         "probe" => probe::run(),
         "show" => cmd_show(&argv[1..]),
         "capture" => cmd_capture(&argv[1..]),
+        "captures" => cmd_captures(&argv[1..]),
         "clear" => cmd_clear(&argv[1..]),
         "status" => cmd_status(&argv[1..]),
         "doctor" => cmd_doctor(&argv[1..]),
@@ -58,6 +59,7 @@ fn usage() {
 
 命令:
   capture  截一张图并返回坐标映射
+  captures 列出守护进程当前持有的截图
   show     高亮一个区域
   clear    清除当前画面
   status   查看守护进程与当前画面
@@ -193,6 +195,15 @@ fn cmd_capture(rest: &[String]) -> i32 {
 
     let params = CaptureParams { max_width, monitor };
     let req = Request::new(1, Method::Capture, Some(json!(params)));
+    dispatch(req, parsed.flag("json"))
+}
+
+fn cmd_captures(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+    let req = Request::new(1, Method::Captures, None);
     dispatch(req, parsed.flag("json"))
 }
 
@@ -384,6 +395,21 @@ fn human_ok(resp: &Response) {
         println!("ok");
         return;
     };
+
+    if let Some(list) = result.get("captures").and_then(|v| v.as_array()) {
+        if list.is_empty() {
+            println!("当前没有截图");
+        } else {
+            for item in list {
+                let id = item.get("capture").and_then(|v| v.as_str()).unwrap_or("?");
+                let width = item.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+                let height = item.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+                let age = item.get("age_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!("{id:<6} {width}×{height}  {} 秒前", age / 1000);
+            }
+        }
+        return;
+    }
 
     if result
         .get("dry_run")
