@@ -37,8 +37,8 @@ use spotlight_render::{
 use crate::config::{self, Config, Theme};
 use crate::paths;
 
-/// 洞相对目标的 padding。
-const PAD: i32 = 6;
+/// 洞相对目标的 padding。要小于等于光环宽度，否则环外会露出一圈没压暗的亮边。
+const PAD: i32 = 3;
 const CARD_RADIUS: f32 = 10.0;
 const CARD_PADDING: i32 = 12;
 /// 标题行与正文之间的间距。

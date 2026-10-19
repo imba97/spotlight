@@ -54,6 +54,50 @@ impl Effect for Ring {
     }
 }
 
+/// 柔和外发光：由外向内叠几层逐渐变浓的描边，形成光晕。
+#[derive(Clone, Copy, Debug)]
+pub struct Glow {
+    pub spread: f32,
+    pub width: f32,
+    pub radius: f32,
+    pub color: [u8; 4],
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self {
+            spread: 9.0,
+            width: 2.0,
+            radius: 12.0,
+            color: [255, 59, 48, 255],
+        }
+    }
+}
+
+impl Effect for Glow {
+    fn name(&self) -> &'static str {
+        "glow"
+    }
+
+    fn margin(&self) -> f32 {
+        self.spread + self.width
+    }
+
+    fn draw(&self, canvas: &mut Canvas<'_>, target: RectF, _ctx: &Ctx<'_>) {
+        const LAYERS: usize = 6;
+        for layer in 0..LAYERS {
+            let t = layer as f32 / (LAYERS - 1) as f32; // 0 = 最外圈
+            let spread = self.spread * (1.0 - t);
+            let alpha = self.color[3] as f32 * (0.06 + 0.11 * t);
+            if alpha < 1.0 {
+                continue;
+            }
+            let mut color = self.color;
+            color[3] = alpha.round() as u8;
+            canvas.stroke_round_rect(target.inflate(spread), self.radius, self.width, color);
+        }
+    }
+}
 /// 模拟手绘的圈。沿着目标外围画一个抖动的椭圆，笔画略有起伏。
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
@@ -165,6 +209,10 @@ pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effec
         .iter()
         .filter_map(|name| match name.as_str() {
             "ring" => Some(ring(style)),
+            "glow" => Some(Box::new(Glow {
+                color: style.accent,
+                ..Glow::default()
+            }) as Box<dyn Effect>),
             "brush" => Some(Box::new(Brush {
                 color: style.accent,
                 ..Brush::default()
@@ -189,7 +237,7 @@ fn ring(style: &EffectStyle) -> Box<dyn Effect> {
 }
 
 /// 已知效果名，用于错误提示与文档。
-pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush"];
+pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush", "glow"];
 
 #[cfg(test)]
 mod tests {
