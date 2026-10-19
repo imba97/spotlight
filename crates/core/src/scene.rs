@@ -60,7 +60,8 @@ pub struct Callout {
 
 impl Callout {
     pub fn is_empty(&self) -> bool {
-        self.text.trim().is_empty()
+        // 只有标题没有正文也是合法卡片。
+        self.title.is_none() && self.text.trim().is_empty()
     }
 }
 

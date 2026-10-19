@@ -47,6 +47,8 @@ pub struct TextLayer<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ctx<'a> {
     pub card: Option<Card>,
+    /// 卡片标题行（小一号、半透明）。
+    pub title: Option<TextLayer<'a>>,
     pub text: Option<TextLayer<'a>>,
     pub progress: Option<Progress>,
     pub close: Option<CloseMark>,
@@ -172,6 +174,9 @@ pub fn render_frame(
         }
     }
 
+    if let Some(title) = ctx.title {
+        blend_text(&mut pixmap, &title);
+    }
     if let Some(text) = ctx.text {
         blend_text(&mut pixmap, &text);
     }

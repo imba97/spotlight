@@ -41,6 +41,8 @@ const PAD: i32 = 6;
 const CARD_BG: [u8; 4] = [27, 27, 31, 240];
 const CARD_RADIUS: f32 = 10.0;
 const CARD_PADDING: i32 = 12;
+/// 标题行与正文之间的间距。
+const TITLE_GAP: i32 = 4;
 /// 右侧多留一点，避免文字顶到关闭叉。
 const CARD_PADDING_RIGHT: i32 = 26;
 const CARD_GAP: i32 = 12;
@@ -72,6 +74,7 @@ struct Geom {
     targets: Vec<Rect>,
     card: Option<Rect>,
     close: Option<Rect>,
+    title_at: Option<(f32, f32)>,
     text_at: Option<(f32, f32)>,
 }
 
@@ -86,6 +89,7 @@ struct Active {
     paused_total: Duration,
     card_screen: Option<Rect>,
     geom: Geom,
+    title: Option<TextBitmap>,
     text: Option<TextBitmap>,
     effects: Vec<Box<dyn Effect>>,
     accent: [u8; 4],
@@ -342,10 +346,13 @@ impl State {
                 Some(secs) => Timeout::Seconds(secs),
             },
         };
-        if let Some(text) = p.text.clone() {
+        if p.text.is_some() || p.title.is_some() || p.step.is_some() {
             scene.callout = Some(Callout {
-                title: p.title.clone(),
-                text,
+                title: p
+                    .title
+                    .clone()
+                    .or_else(|| p.step.clone().map(|step| format!("第 {step} 步"))),
+                text: p.text.clone().unwrap_or_default(),
             });
         }
         scene
@@ -371,19 +378,44 @@ impl State {
             .ceil() as i32
             + 2;
 
+        let title_bitmap = scene
+            .callout
+            .as_ref()
+            .and_then(|c| c.title.as_ref())
+            .and_then(|title| {
+                render_text(
+                    title,
+                    self.cfg.max_text_width,
+                    (self.cfg.font_px - 2).max(8),
+                )
+            });
         let text_bitmap = scene
             .callout
             .as_ref()
+            .filter(|c| !c.text.trim().is_empty())
             .and_then(|c| render_text(&c.text, self.cfg.max_text_width, self.cfg.font_px));
 
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
         let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
-        let card_rect = text_bitmap.as_ref().map(|tb| {
+        let title_block = title_bitmap
+            .as_ref()
+            .map(|tb| tb.height as i32 + TITLE_GAP)
+            .unwrap_or(0);
+        let content_w = title_bitmap
+            .as_ref()
+            .map(|tb| tb.width as i32)
+            .into_iter()
+            .chain(text_bitmap.as_ref().map(|tb| tb.width as i32))
+            .max()
+            .unwrap_or(0);
+        let content_h = title_block + text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
+
+        let card_rect = (content_w > 0).then(|| {
             place(
                 target_union,
                 Size::new(
-                    tb.width as i32 + CARD_PADDING + CARD_PADDING_RIGHT,
-                    tb.height as i32 + CARD_PADDING * 2,
+                    content_w + CARD_PADDING + CARD_PADDING_RIGHT,
+                    content_h + CARD_PADDING * 2,
                 ),
                 bounds,
                 CARD_GAP,
@@ -422,11 +454,21 @@ impl State {
             targets: rects.iter().map(|r| offset(*r)).collect(),
             card: card_rect.map(offset),
             close: close_mark.map(offset),
-            text_at: card_rect.map(|card| {
-                (
-                    (card.x + CARD_PADDING - union.x) as f32,
-                    (card.y + CARD_PADDING - union.y) as f32,
-                )
+            title_at: card_rect.and_then(|card| {
+                title_bitmap.as_ref().map(|_| {
+                    (
+                        (card.x + CARD_PADDING - union.x) as f32,
+                        (card.y + CARD_PADDING - union.y) as f32,
+                    )
+                })
+            }),
+            text_at: card_rect.and_then(|card| {
+                text_bitmap.as_ref().map(|_| {
+                    (
+                        (card.x + CARD_PADDING - union.x) as f32,
+                        (card.y + CARD_PADDING + title_block - union.y) as f32,
+                    )
+                })
             }),
         };
 
@@ -443,6 +485,7 @@ impl State {
             paused_total: Duration::ZERO,
             card_screen: card_rect,
             geom,
+            title: title_bitmap,
             text: text_bitmap,
             effects,
             accent: self.cfg.accent,
@@ -540,6 +583,16 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
             radius: CARD_RADIUS,
             bg: CARD_BG,
         }),
+        title: match (&active.title, active.geom.title_at) {
+            (Some(tb), Some((x, y))) => Some(TextLayer {
+                rect: RectF::new(x, y, tb.width as f32, tb.height as f32),
+                mask: &tb.alpha,
+                mask_width: tb.width,
+                mask_height: tb.height,
+                color: [255, 255, 255, 168],
+            }),
+            _ => None,
+        },
         text: match (&active.text, active.geom.text_at) {
             (Some(tb), Some((x, y))) => Some(TextLayer {
                 rect: RectF::new(x, y, tb.width as f32, tb.height as f32),
