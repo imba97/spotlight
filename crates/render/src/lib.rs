@@ -43,6 +43,16 @@ pub struct TextLayer<'a> {
     pub color: [u8; 4],
 }
 
+/// 目标角上的步骤标记（"1"、"2"、"1/3"）。
+#[derive(Clone, Copy, Debug)]
+pub struct Badge<'a> {
+    pub rect: RectF,
+    pub radius: f32,
+    /// RGBA
+    pub bg: [u8; 4],
+    pub text: TextLayer<'a>,
+}
+
 /// 与效果无关的附属元素。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ctx<'a> {
@@ -52,6 +62,7 @@ pub struct Ctx<'a> {
     pub text: Option<TextLayer<'a>>,
     pub progress: Option<Progress>,
     pub close: Option<CloseMark>,
+    pub badges: &'a [Badge<'a>],
 }
 
 /// 效果可以往这里画。坐标是效果窗口的客户区坐标。
@@ -172,6 +183,20 @@ pub fn render_frame(
                 effect.draw(&mut canvas, *target, ctx);
             }
         }
+    }
+
+    for badge in ctx.badges {
+        if let Some(path) = sk_round_rect(badge.rect, badge.radius) {
+            let p = paint(badge.bg);
+            pixmap.fill_path(
+                &path,
+                &p,
+                tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+        blend_text(&mut pixmap, &badge.text);
     }
 
     if let Some(title) = ctx.title {
@@ -383,6 +408,36 @@ mod tests {
         assert_ne!(buf[idx + 2], 255, "快结束时右端回到卡片底色");
     }
 
+    #[test]
+    fn badge_paints_pill_under_text() {
+        let mask = vec![255u8; 4];
+        let badges = [Badge {
+            rect: RectF::new(8.0, 8.0, 20.0, 20.0),
+            radius: 10.0,
+            bg: [0, 0, 255, 255],
+            text: TextLayer {
+                rect: RectF::new(10.0, 10.0, 2.0, 2.0),
+                mask: &mask,
+                mask_width: 2,
+                mask_height: 2,
+                color: [255, 255, 255, 255],
+            },
+        }];
+        let ctx = Ctx {
+            badges: &badges,
+            ..Ctx::default()
+        };
+        let buf = render_frame(40, 40, &[], &[], &ctx, 1.0).unwrap();
+        // 药丸内部是纯蓝（BGRA 里 B=255），说明背景画上了
+        let pill = ((18 * 40 + 18) * 4) as usize;
+        assert_eq!(buf[pill + 3], 255);
+        assert_eq!(buf[pill], 255);
+        // 文字位置被白色覆盖
+        let glyph = ((10 * 40 + 10) * 4) as usize;
+        assert_eq!(buf[glyph], 255);
+        assert_eq!(buf[glyph + 1], 255);
+        assert_eq!(buf[glyph + 2], 255);
+    }
     #[test]
     fn opacity_scales_premultiplied_channels() {
         let ctx = Ctx {

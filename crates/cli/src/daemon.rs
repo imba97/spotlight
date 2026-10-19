@@ -30,7 +30,8 @@ use spotlight_platform::win::{
     take_dismiss_request,
 };
 use spotlight_render::{
-    Card, CloseMark, Ctx, Effect, EffectStyle, Progress, TextLayer, build_effects, render_frame,
+    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, Progress, TextLayer, build_effects,
+    render_frame,
 };
 
 use crate::config::{self, Config};
@@ -68,12 +69,12 @@ struct Job {
 }
 
 /// 画面上各元素相对效果窗口的位置（客户区坐标）。
-#[derive(Clone, Debug)]
 struct Geom {
     union: Rect,
     targets: Vec<Rect>,
     card: Option<Rect>,
     close: Option<Rect>,
+    badges: Vec<(Rect, TextBitmap)>,
     title_at: Option<(f32, f32)>,
     text_at: Option<(f32, f32)>,
 }
@@ -346,12 +347,16 @@ impl State {
                 Some(secs) => Timeout::Seconds(secs),
             },
         };
-        if p.text.is_some() || p.title.is_some() || p.step.is_some() {
+        if p.text.is_some() || p.title.is_some() {
+            // 只有一个带步骤的目标时，步骤号直接当标题；多目标时交给角标。
+            let steps: Vec<&String> = scene
+                .targets
+                .iter()
+                .filter_map(|target| target.step.as_ref())
+                .collect();
+            let step_title = (steps.len() == 1).then(|| format!("第 {} 步", steps[0]));
             scene.callout = Some(Callout {
-                title: p
-                    .title
-                    .clone()
-                    .or_else(|| p.step.clone().map(|step| format!("第 {step} 步"))),
+                title: p.title.clone().or(step_title),
                 text: p.text.clone().unwrap_or_default(),
             });
         }
@@ -377,6 +382,27 @@ impl State {
             .fold(0.0_f32, f32::max)
             .ceil() as i32
             + 2;
+
+        // 每个带步骤的目标做一个小药丸，多目标时能看出先后。
+        let mut badge_data: Vec<(Rect, TextBitmap)> = Vec::new();
+        if scene.targets.len() > 1 {
+            for target in &scene.targets {
+                let Some(step) = &target.step else { continue };
+                let Some(bitmap) = render_text(step, 64, (self.cfg.font_px - 3).max(8)) else {
+                    continue;
+                };
+                let pill_w = bitmap.width as i32 + 12;
+                let pill_h = bitmap.height as i32 + 6;
+                let target_rect = target.rect.rect();
+                let x = (target_rect.x - 6).clamp(0, (screen_w - pill_w).max(0));
+                let mut y = target_rect.y - pill_h - 6;
+                if y < 0 {
+                    y = target_rect.y + 6;
+                }
+                let y = y.clamp(0, (screen_h - pill_h).max(0));
+                badge_data.push((Rect::new(x, y, pill_w, pill_h), bitmap));
+            }
+        }
 
         let title_bitmap = scene
             .callout
@@ -429,6 +455,9 @@ impl State {
         if let Some(card) = card_rect {
             union = union.union(card);
         }
+        for (rect, _) in &badge_data {
+            union = union.union(*rect);
+        }
 
         let offset = |r: Rect| r.translated(-union.x, -union.y);
 
@@ -454,6 +483,10 @@ impl State {
             targets: rects.iter().map(|r| offset(*r)).collect(),
             card: card_rect.map(offset),
             close: close_mark.map(offset),
+            badges: badge_data
+                .into_iter()
+                .map(|(rect, bitmap)| (offset(rect), bitmap))
+                .collect(),
             title_at: card_rect.and_then(|card| {
                 title_bitmap.as_ref().map(|_| {
                     (
@@ -577,12 +610,36 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
         _ => None,
     };
 
+    let badges: Vec<Badge> = active
+        .geom
+        .badges
+        .iter()
+        .map(|(rect, bitmap)| Badge {
+            rect: RectF::from_rect(*rect),
+            radius: rect.h as f32 / 2.0,
+            bg: active.accent,
+            text: TextLayer {
+                rect: RectF::new(
+                    rect.x as f32 + 6.0,
+                    rect.y as f32 + 3.0,
+                    bitmap.width as f32,
+                    bitmap.height as f32,
+                ),
+                mask: &bitmap.alpha,
+                mask_width: bitmap.width,
+                mask_height: bitmap.height,
+                color: [255, 255, 255, 255],
+            },
+        })
+        .collect();
+
     let ctx = Ctx {
         card: active.geom.card.map(|c| Card {
             rect: RectF::from_rect(c),
             radius: CARD_RADIUS,
             bg: CARD_BG,
         }),
+        badges: &badges,
         title: match (&active.title, active.geom.title_at) {
             (Some(tb), Some((x, y))) => Some(TextLayer {
                 rect: RectF::new(x, y, tb.width as f32, tb.height as f32),

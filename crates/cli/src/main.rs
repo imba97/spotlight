@@ -76,7 +76,7 @@ show 参数:
   --space screen       或：坐标已经是屏幕物理像素
   --text <文案>        显示在卡片里
   --title <标题>       卡片标题
-  --step <如 1/3>      步骤标记
+  --step <如 1/3>      步骤标记；可重复，按序对应 --rect
   --timeout <秒|auto>  0 表示常驻；缺省按字数估算
   --key <id>           相同 key 原地替换
   --json               机器可读输出"
@@ -93,16 +93,16 @@ fn cmd_show(rest: &[String]) -> i32 {
         return usage_error("show 需要 --rect x,y,w,h（可重复）");
     }
 
+    // --step 可以给多次，按顺序对应 --rect。
+    let steps = parsed.all("step");
     let mut targets = Vec::new();
-    for raw in parsed.all("rect") {
+    for (index, raw) in parsed.all("rect").iter().enumerate() {
         match args::parse_rect(raw) {
-            Ok(rect) => targets.push(TargetSpec { rect, step: None }),
+            Ok(rect) => targets.push(TargetSpec {
+                rect,
+                step: steps.get(index).cloned(),
+            }),
             Err(err) => return usage_error(&err),
-        }
-    }
-    if let Some(step) = parsed.value("step") {
-        if let Some(first) = targets.first_mut() {
-            first.step = Some(step.to_string());
         }
     }
 
