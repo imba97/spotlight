@@ -77,6 +77,17 @@ pub struct Ctx<'a> {
     /// 卡片最后一行提示，例如「下一步：…」。比正文淡。
     pub hint: Option<TextLayer<'a>>,
     pub badges: &'a [Badge<'a>],
+    /// 高亮洞的形状：遮罩是矩形挖的洞，圆角外侧要由这里补上遮罩色。
+    pub holes: &'a [Hole],
+    /// 补角用的遮罩颜色（含 alpha）。
+    pub dim: [u8; 4],
+}
+
+/// 一个高亮洞：矩形 + 圆角。圆角之外的四个角由渲染层补遮罩色。
+#[derive(Clone, Copy, Debug)]
+pub struct Hole {
+    pub rect: RectF,
+    pub radius: f32,
 }
 
 /// 效果可以往这里画。坐标是效果窗口的客户区坐标。
@@ -221,6 +232,35 @@ pub fn render_frame(
 
     if let Some(hint) = ctx.hint {
         blend_text(&mut pixmap, &hint);
+    }
+
+    // 遮罩是矩形洞，但环是圆角的：四个角里"圆角之外"的那几块必须补上遮罩色，
+    // 否则会露出四块亮角，看起来像圆角没对齐。
+    if !ctx.holes.is_empty() {
+        let color = paint(ctx.dim);
+        for hole in ctx.holes {
+            let mut builder = PathBuilder::new();
+            if let Some(outer) = tiny_skia::Rect::from_ltrb(
+                hole.rect.x,
+                hole.rect.y,
+                hole.rect.right(),
+                hole.rect.bottom(),
+            ) {
+                builder.push_rect(outer);
+            }
+            if let Some(round) = sk_round_rect(hole.rect, hole.radius) {
+                builder.push_path(&round);
+            }
+            if let Some(path) = builder.finish() {
+                pixmap.fill_path(
+                    &path,
+                    &color,
+                    tiny_skia::FillRule::EvenOdd,
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
     }
 
     for badge in ctx.badges {
@@ -475,6 +515,32 @@ mod tests {
         assert_eq!(buf[glyph], 255);
         assert_eq!(buf[glyph + 1], 255);
         assert_eq!(buf[glyph + 2], 255);
+    }
+    #[test]
+    fn rounded_hole_dims_the_corners() {
+        let hole = Hole {
+            rect: RectF::new(20.0, 20.0, 60.0, 40.0),
+            radius: 10.0,
+        };
+        let ctx = Ctx {
+            holes: &[hole],
+            dim: [0, 0, 0, 140],
+            ..Ctx::default()
+        };
+        let buf = render_frame(100, 80, &[], &[], &ctx, 1.0).unwrap();
+
+        // 圆角外侧的角：矩形内、圆外
+        let mut max_corner = 0u8;
+        for y in 20..30 {
+            for x in 20..30 {
+                let idx = ((y * 100 + x) * 4 + 3) as usize;
+                max_corner = max_corner.max(buf[idx]);
+            }
+        }
+        assert!(max_corner > 60, "圆角外侧应被遮罩，实际最大 alpha={max_corner}");
+        // 洞的中心不该被涂
+        let center = ((40 * 100 + 50) * 4 + 3) as usize;
+        assert_eq!(buf[center], 0);
     }
     #[test]
     fn keycap_draws_fill_and_text() {

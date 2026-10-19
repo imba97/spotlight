@@ -103,6 +103,10 @@ struct Active {
     text: Option<TextBitmap>,
     keycap: Option<TextBitmap>,
     hint: Option<TextBitmap>,
+    /// 高亮洞（窗口坐标）与它的圆角，用来补圆角外侧的遮罩。
+    holes: Vec<Rect>,
+    hole_radius: f32,
+    dim: [u8; 4],
     effects: Vec<Box<dyn Effect>>,
     accent: [u8; 4],
     theme: Theme,
@@ -828,6 +832,9 @@ impl State {
             text: text_bitmap,
             keycap: shortcut_bitmap,
             hint: hint_bitmap,
+            holes: holes.iter().map(|r| offset(*r)).collect(),
+            hole_radius: dip(self.cfg.radius) + hole_pad as f32,
+            dim: [0, 0, 0, dim_alpha],
             effects,
             accent: self.cfg.accent,
             theme: self.cfg.theme,
@@ -965,6 +972,15 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
         _ => None,
     };
 
+    let hole_views: Vec<spotlight_render::Hole> = active
+        .holes
+        .iter()
+        .map(|rect| spotlight_render::Hole {
+            rect: RectF::from_rect(*rect),
+            radius: active.hole_radius,
+        })
+        .collect();
+
     let badges: Vec<Badge> = active
         .geom
         .badges
@@ -1020,6 +1036,8 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
             }),
             _ => None,
         },
+        holes: &hole_views,
+        dim: active.dim,
         badges: &badges,
         title: match (&active.title, active.geom.title_at) {
             (Some(tb), Some((x, y))) => Some(TextLayer {
@@ -1187,7 +1205,10 @@ fn serve(conn: &mut Connection, sender: &message::Sender<Job>) {
 /// 守护进程入口。
 pub fn run() -> i32 {
     enable_dpi_awareness();
-    let _guard = match SingleInstance::acquire("Local\\spotlight-daemon") {
+    let _guard = match SingleInstance::acquire(&format!(
+        "Local\\spotlight-daemon-{:08x}",
+        ipc::binary_tag()
+    )) {
         Ok(guard) => guard,
         Err(_) => return 0, // 已经有一个在跑
     };

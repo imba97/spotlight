@@ -37,7 +37,33 @@ pub fn pipe_name() -> String {
     } else {
         safe
     };
-    format!(r"\\.\pipe\spotlight-{safe}")
+    format!(r"\\.\pipe\spotlight-{safe}-{:08x}", binary_tag())
+}
+
+/// 当前可执行文件的指纹（路径 + 修改时间）。
+///
+/// 用它给管道名加后缀：重新编译后 mtime 变了，新 CLI 会连到新守护进程，
+/// 不会悄悄连上旧版本的守护进程——那会让"改了代码却没生效"这种鬼故事发生。
+pub fn binary_tag() -> u32 {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mtime = std::fs::metadata(&exe)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| delta.as_secs())
+        .unwrap_or(0);
+
+    let mut hash = 2_166_136_261u32;
+    for byte in exe
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .chain(mtime.to_le_bytes().iter())
+    {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash
 }
 
 fn wide(s: &str) -> Vec<u16> {
