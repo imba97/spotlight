@@ -165,6 +165,9 @@ pub struct ShowParams {
     /// 可选的键盘快捷键提示，例如 Ctrl+B。
     #[serde(default)]
     pub shortcut: Option<String>,
+    /// 只校验不显示。show 会返回换算后的屏幕矩形，但不会创建任何窗口。
+    #[serde(default)]
+    pub dry_run: bool,
     /// 效果链名字；空 = 默认光环。显式给出时**替换**默认组合。
     #[serde(default)]
     pub effects: Vec<String>,
@@ -194,6 +197,15 @@ pub struct ClearParams {
 pub struct ShowResult {
     pub scene: String,
     pub timeout_ms: Option<u64>,
+    /// 是否只是一次校验（没有真的显示）。
+    #[serde(default)]
+    pub dry_run: bool,
+    /// 换算后的屏幕物理像素矩形。
+    #[serde(default)]
+    pub targets: Vec<[i32; 4]>,
+    /// 实际生效的效果链。
+    #[serde(default)]
+    pub effects: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

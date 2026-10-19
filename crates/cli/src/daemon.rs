@@ -581,6 +581,17 @@ impl State {
         };
         let timeout = resolve(scene.timeout, scene.text());
 
+        // 只校验：把换算后的屏幕矩形和预计时长报回去，不建任何窗口。
+        if p.dry_run {
+            return Ok(ShowResult {
+                scene: scene.key.clone().unwrap_or_else(|| "s-1".into()),
+                timeout_ms: timeout.map(|d| d.as_millis() as u64),
+                dry_run: true,
+                targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
+                effects: effect_names.clone(),
+            });
+        }
+
         let mut active = Active {
             key: scene.key.clone(),
             has_text: scene.callout.is_some(),
@@ -651,6 +662,9 @@ impl State {
         Ok(ShowResult {
             scene: scene.key.clone().unwrap_or_else(|| "s-1".into()),
             timeout_ms: timeout.map(|d| d.as_millis() as u64),
+            dry_run: false,
+            targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
+            effects: effect_names,
         })
     }
 

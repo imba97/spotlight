@@ -81,6 +81,7 @@ show 参数:
   --step <如 1/3>      步骤标记；可重复，按序对应 --rect
   --shortcut <Ctrl+B> 快捷键提示，显示成卡片底部的键帽
   --timeout <秒|auto>  0 表示常驻；缺省按字数估算
+  --dry-run            只校验坐标和参数，不真的显示
   --key <id>           相同 key 原地替换
   --json               机器可读输出"
     );
@@ -149,6 +150,9 @@ fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(),
     }
     if let Some(shortcut) = parsed.value("shortcut") {
         params.shortcut = Some(shortcut.to_string());
+    }
+    if parsed.flag("dry-run") {
+        params.dry_run = true;
     }
     if let Some(raw) = parsed.value("timeout") {
         params.timeout = match raw {
@@ -381,6 +385,25 @@ fn human_ok(resp: &Response) {
         return;
     };
 
+    if result
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let count = result
+            .get("targets")
+            .and_then(|v| v.as_array())
+            .map(|list| list.len())
+            .unwrap_or(0);
+        let timeout = result
+            .get("timeout_ms")
+            .and_then(|v| v.as_u64())
+            .map(|ms| format!("，预计 {:.1} 秒", ms as f64 / 1000.0))
+            .unwrap_or_else(|| "，常驻".to_string());
+        println!("校验通过：{count} 个目标{timeout}（未显示）");
+        return;
+    }
+
     if let Some(ms) = result.get("timeout_ms").and_then(|v| v.as_u64()) {
         println!("已显示，{:.1} 秒后自动消失", ms as f64 / 1000.0);
     } else if let Some(capture) = result.get("capture").and_then(|v| v.as_str()) {
@@ -518,6 +541,16 @@ mod tests {
         assert_eq!(params.timeout, None);
     }
 
+    #[test]
+    fn dry_run_flag_is_forwarded() {
+        let mut params = ShowParams::default();
+        apply_overrides(&mut params, &parsed("--dry-run")).unwrap();
+        assert!(params.dry_run);
+
+        let mut plain = ShowParams::default();
+        apply_overrides(&mut plain, &parsed("--json")).unwrap();
+        assert!(!plain.dry_run);
+    }
     #[test]
     fn bad_timeout_is_reported() {
         let mut params = ShowParams::default();

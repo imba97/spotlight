@@ -53,6 +53,9 @@ AI:   capture → 看截图 → 量出矩形 → show
 坐标必须二选一：`--capture <id>`（推荐）或 `--space screen`。两个都不给会直接报错并
 给出下一步提示——宁可不画，也不要在某个 DPI 组合下静默偏 30 像素。
 
+批量准备场景时可以加 `--dry-run` 先把坐标全部验一遍：它返回换算后的屏幕矩形和预计
+时长，但不会在屏幕上画任何东西。
+
 复杂场景用 JSON 文件：
 
 ```bash
@@ -97,6 +100,7 @@ spotlight show --file scene.json
 --shortcut "Ctrl+B" 快捷键提示
 --effect <名字>    ring / brush / glow / arrow（可重复）
 --timeout <秒|0>   0 表示常驻；缺省按字数估算
+--dry-run          只校验坐标与参数、返回换算结果，不真的显示
 --key <id>         相同 key 原地替换，不重播入场动画
 ```
 
