@@ -20,6 +20,7 @@ use spotlight_core::protocol::{
 use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
 use spotlight_platform::win::effect::EffectWindow;
+use spotlight_platform::win::hotkey;
 use spotlight_platform::win::ipc::{self, Connection, Server};
 use spotlight_platform::win::message::{self, Event, MessageBus};
 use spotlight_platform::win::monitors;
@@ -207,7 +208,7 @@ impl State {
         }
         set_close_hit(None);
         if self.hotkey {
-            message::unregister_dismiss_hotkey();
+            hotkey::unregister(message::HOTKEY_ID);
             self.hotkey = false;
         }
         self.arm();
@@ -683,7 +684,8 @@ impl State {
         self.last_activity = Instant::now();
         self.arm();
         // 只在有画面时占用热键，画面消失立刻归还。
-        self.hotkey = message::register_dismiss_hotkey();
+        let spec = hotkey::parse(&self.cfg.hotkey).unwrap_or_else(|_| hotkey::default_dismiss());
+        self.hotkey = hotkey::register(message::HOTKEY_ID, spec);
 
         Ok(ShowResult {
             scene: scene.key.clone().unwrap_or_else(|| "s-1".into()),

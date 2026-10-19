@@ -320,14 +320,11 @@ fn cmd_doctor(rest: &[String]) -> i32 {
     if reachable {
         println!("守护进程  : 正常（{ping_ms} ms，v{daemon_version}）");
         if has_scene {
-            println!(
-                "关闭热键  : {}",
-                if hotkey {
-                    "已注册（Ctrl+Alt+Esc）"
-                } else {
-                    "注册失败，可能被其他程序占用；画面仍可用关闭按钮关掉"
-                }
-            );
+            if hotkey {
+                println!("关闭热键  : 已注册（{}）", loaded.config.hotkey);
+            } else {
+                println!("关闭热键  : 注册失败，可能被其他程序占用；画面仍可用关闭按钮关掉");
+            }
         } else {
             println!("关闭热键  : 空闲不占用，出现画面时才注册");
         }

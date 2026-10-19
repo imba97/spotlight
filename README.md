@@ -128,6 +128,9 @@ default = ["ring"]       # 没传 --effect 时用这组
 
 [pause]
 cap_seconds = 60         # 鼠标停在文案上最多暂停多久
+
+[hotkey]
+dismiss = "Ctrl+Alt+Esc" # 关闭当前画面的全局热键
 ```
 
 写错了不会启动失败：**只有出错的那一项**回退默认值，`spotlight doctor` 里能看到说明。

@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use spotlight_platform::win::hotkey;
 
 /// 卡片配色。深色卡片配白字，浅色卡片配深字。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +65,9 @@ impl Theme {
 pub struct Config {
     /// RGBA 强调色，光环 / 圈画 / 进度条都用它。
     pub accent: [u8; 4],
+    /// 关闭当前画面的全局热键，例如 Ctrl+Alt+Esc。
+    pub hotkey: String,
+
     /// 遮罩不透明度，0.05–0.9。
     pub dim: f32,
     pub radius: f32,
@@ -81,6 +85,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            hotkey: "Ctrl+Alt+Esc".to_string(),
             accent: [255, 59, 48, 255],
             dim: 0.55,
             radius: 10.0,
@@ -111,6 +116,8 @@ struct Raw {
     #[serde(default)]
     effects: RawEffects,
     #[serde(default)]
+    hotkey: RawHotkey,
+    #[serde(default)]
     pause: RawPause,
 }
 
@@ -134,6 +141,12 @@ struct RawCallout {
     font_px: Option<i32>,
     #[serde(default)]
     max_text_width: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawHotkey {
+    #[serde(default)]
+    dismiss: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -209,6 +222,15 @@ fn apply(config: &mut Config, raw: &Raw, warnings: &mut Vec<String>) {
     }
     if let Some(width) = raw.visual.ring_width {
         config.ring_width = width.clamp(1.0, 10.0);
+    }
+    if let Some(text) = &raw.hotkey.dismiss {
+        match hotkey::parse(text) {
+            Ok(_) => config.hotkey = text.clone(),
+            Err(err) => warnings.push(format!(
+                "hotkey.dismiss 无效（{err}），仍用默认的 {}",
+                config.hotkey
+            )),
+        }
     }
     if let Some(text) = &raw.visual.theme {
         match text.trim().to_ascii_lowercase().as_str() {
@@ -351,6 +373,18 @@ cap_seconds = 30
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn hotkey_is_validated() {
+        let path = write_temp("hotkey", "[hotkey]\ndismiss = \"Ctrl+Shift+F9\"\n");
+        assert_eq!(load(&path).config.hotkey, "Ctrl+Shift+F9");
+        let _ = std::fs::remove_file(&path);
+
+        let path = write_temp("hotkey-bad", "[hotkey]\ndismiss = \"Nope+Alt\"\n");
+        let loaded = load(&path);
+        assert_eq!(loaded.config.hotkey, Config::default().hotkey);
+        assert!(loaded.note.unwrap().contains("hotkey"));
+        let _ = std::fs::remove_file(&path);
+    }
     #[test]
     fn light_theme_flips_contrast() {
         let bg = Theme::Light.card_bg();

@@ -8,9 +8,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, RegisterHotKey, UnregisterHotKey, VK_ESCAPE,
-};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW,
     SetTimer, TranslateMessage, WM_APP, WM_HOTKEY, WM_TIMER,
@@ -28,24 +25,6 @@ pub enum Event<T> {
     Timer,
     /// 用户按下了"关掉画面"的热键。
     Hotkey,
-}
-
-/// 注册 `Ctrl+Alt+Esc`。被别的程序占用时返回 false。
-pub fn register_dismiss_hotkey() -> bool {
-    unsafe {
-        RegisterHotKey(
-            std::ptr::null_mut(),
-            HOTKEY_ID,
-            MOD_CONTROL | MOD_ALT,
-            u32::from(VK_ESCAPE),
-        ) != 0
-    }
-}
-
-pub fn unregister_dismiss_hotkey() {
-    unsafe {
-        UnregisterHotKey(std::ptr::null_mut(), HOTKEY_ID);
-    }
 }
 
 pub struct MessageBus<T> {

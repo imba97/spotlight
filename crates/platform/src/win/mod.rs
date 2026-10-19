@@ -3,6 +3,7 @@
 //! 这一层的职责只有"把窗口摆上去"和"把屏幕读回来"，不含任何布局逻辑。
 
 pub mod effect;
+pub mod hotkey;
 pub mod ipc;
 pub mod message;
 pub mod monitors;
