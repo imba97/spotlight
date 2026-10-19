@@ -78,7 +78,7 @@ pub fn save_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> Result<(),
     let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
 
     let mut rgba = Vec::with_capacity(bgra.len());
-    for px in bgra.chunks_exact(4) {
+    for px in bgra.as_chunks::<4>().0 {
         rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
     }
     writer

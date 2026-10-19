@@ -355,7 +355,7 @@ fn blend_text(pixmap: &mut Pixmap, text: &TextLayer<'_>) {
 fn to_premultiplied_bgra(rgba: &[u8], opacity: f32) -> Vec<u8> {
     let k = opacity.clamp(0.0, 1.0);
     let mut out = rgba.to_vec();
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
         if k < 1.0 {
             // 预乘空间：四个通道一起缩放才不会破坏 alpha <= 通道值的关系

@@ -64,12 +64,11 @@ fn virtual_key(key: &str) -> Option<u32> {
     }
 
     // 功能键 F1–F24
-    if let Some(rest) = lower.strip_prefix('f') {
-        if let Ok(number) = rest.parse::<u32>() {
-            if (1..=24).contains(&number) {
-                return Some(0x70 + number - 1);
-            }
-        }
+    if let Some(rest) = lower.strip_prefix('f')
+        && let Ok(number) = rest.parse::<u32>()
+        && (1..=24).contains(&number)
+    {
+        return Some(0x70 + number - 1);
     }
 
     Some(match lower.as_str() {
