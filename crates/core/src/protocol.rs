@@ -38,6 +38,7 @@ pub enum Method {
     Status,
     Capture,
     Captures,
+    Reload,
     Ping,
 }
 
@@ -243,6 +244,19 @@ pub struct SceneSummary {
     pub remaining_ms: Option<u64>,
 }
 
+/// 重新读取配置的结果。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReloadResult {
+    /// 恒为 true，便于 CLI 识别这是重载结果。
+    pub reloaded: bool,
+    /// 配置文件内容是否有变化。
+    pub changed: bool,
+    /// 重载后生效的关闭热键。
+    pub hotkey: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CaptureParams {
     /// 长边上限，默认 1280。
@@ -369,6 +383,19 @@ mod tests {
         assert!(err.is_err());
     }
 
+    #[test]
+    fn reload_result_round_trips() {
+        let result = ReloadResult {
+            reloaded: true,
+            changed: true,
+            hotkey: "Ctrl+Shift+F8".into(),
+            note: None,
+        };
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(!text.contains("note"), "空 note 不应出现在线上");
+        let back: ReloadResult = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, result);
+    }
     #[test]
     fn captures_result_round_trips() {
         let result = CapturesResult {

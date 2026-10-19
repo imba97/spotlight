@@ -33,6 +33,7 @@ fn main() {
         "show" => cmd_show(&argv[1..]),
         "capture" => cmd_capture(&argv[1..]),
         "captures" => cmd_captures(&argv[1..]),
+        "reload" => cmd_reload(&argv[1..]),
         "clear" => cmd_clear(&argv[1..]),
         "status" => cmd_status(&argv[1..]),
         "doctor" => cmd_doctor(&argv[1..]),
@@ -60,6 +61,7 @@ fn usage() {
 命令:
   capture  截一张图并返回坐标映射
   captures 列出守护进程当前持有的截图
+  reload   让守护进程重新读取配置
   show     高亮一个区域
   clear    清除当前画面
   status   查看守护进程与当前画面
@@ -204,6 +206,15 @@ fn cmd_captures(rest: &[String]) -> i32 {
         Err(err) => return usage_error(&err),
     };
     let req = Request::new(1, Method::Captures, None);
+    dispatch(req, parsed.flag("json"))
+}
+
+fn cmd_reload(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+    let req = Request::new(1, Method::Reload, None);
     dispatch(req, parsed.flag("json"))
 }
 
@@ -393,6 +404,23 @@ fn human_ok(resp: &Response) {
         println!("ok");
         return;
     };
+
+    if result.get("reloaded").is_some() {
+        let changed = result
+            .get("changed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let hotkey = result.get("hotkey").and_then(|v| v.as_str()).unwrap_or("?");
+        if changed {
+            println!("配置已重新加载（关闭热键 {hotkey}），下一次 show 生效");
+        } else {
+            println!("配置没有变化（关闭热键 {hotkey}）");
+        }
+        if let Some(note) = result.get("note").and_then(|v| v.as_str()) {
+            println!("注意: {note}");
+        }
+        return;
+    }
 
     if let Some(list) = result.get("captures").and_then(|v| v.as_array()) {
         if list.is_empty() {

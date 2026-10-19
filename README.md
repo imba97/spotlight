@@ -84,8 +84,10 @@ spotlight show --file scene.json
 | 命令 | 作用 |
 | --- | --- |
 | `capture` | 截图并返回坐标映射（默认主屏，`--monitor N` 选屏） |
+| `captures` | 列出守护进程当前持有的截图（id / 尺寸 / 多久前） |
 | `show` | 显示高亮（`--rect` 可重复，或用 `--file`） |
 | `clear` | 立即清除当前画面 |
+| `reload` | 让守护进程重新读取配置，不必等它自己退出 |
 | `status` | 查看守护进程与当前画面 |
 | `doctor` | 自检：屏幕、DPI、配置、守护进程、热键 |
 | `--json` | 上述命令都支持机器可读输出 |
@@ -134,6 +136,7 @@ dismiss = "Ctrl+Alt+Esc" # 关闭当前画面的全局热键
 ```
 
 写错了不会启动失败：**只有出错的那一项**回退默认值，`spotlight doctor` 里能看到说明。
+改完配置跑一次 `spotlight reload` 就生效，不用等守护进程自己退出。
 
 ## 已知限制
 

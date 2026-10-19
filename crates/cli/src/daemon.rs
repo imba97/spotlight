@@ -14,8 +14,8 @@ use spotlight_core::mask::subtract;
 use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
     CaptureImage, CaptureInfo, CaptureParams, CaptureSummary, CapturesResult, ClearParams,
-    ErrorBody, Method, MonitorInfo, RectInfo, Request, Response, SceneSummary, SegmentInfo,
-    ShowParams, ShowResult, StatusResult, codes,
+    ErrorBody, Method, MonitorInfo, RectInfo, ReloadResult, Request, Response, SceneSummary,
+    SegmentInfo, ShowParams, ShowResult, StatusResult, codes,
 };
 use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
@@ -219,6 +219,28 @@ impl State {
             .iter()
             .find(|entry| entry.map.id.0 == id)
             .map(|entry| &entry.map)
+    }
+
+    /// 重新读取配置。只影响之后的 show；正在显示的画面保持原样。
+    fn reload(&mut self) -> ReloadResult {
+        let loaded = config::load(&paths::config_path());
+        let changed = loaded.config != self.cfg;
+        self.cfg = loaded.config;
+
+        // 画面正在显示时，热键立刻按新配置重注册
+        if self.active.is_some() {
+            hotkey::unregister(message::HOTKEY_ID);
+            let spec =
+                hotkey::parse(&self.cfg.hotkey).unwrap_or_else(|_| hotkey::default_dismiss());
+            self.hotkey = hotkey::register(message::HOTKEY_ID, spec);
+        }
+
+        ReloadResult {
+            reloaded: true,
+            changed,
+            hotkey: self.cfg.hotkey.clone(),
+            note: loaded.note,
+        }
     }
 
     fn captures(&self) -> CapturesResult {
@@ -871,6 +893,10 @@ fn handle(state: &mut State, req: Request) -> Response {
                 Ok(info) => Response::ok(id, serde_json::to_value(info).unwrap_or(json!(null))),
                 Err(err) => Response::err(id, err),
             }
+        }
+        Method::Reload => {
+            let result = state.reload();
+            Response::ok(id, serde_json::to_value(result).unwrap_or(json!(null)))
         }
         Method::Captures => {
             let result = state.captures();
