@@ -3,7 +3,7 @@
 //! 这一层不碰窗口、不碰屏幕，是纯函数，所以可以在没有桌面的环境里做快照测试。
 
 use spotlight_core::geom::RectF;
-use tiny_skia::{Paint, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};
+use tiny_skia::{LineCap, Paint, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ring {
@@ -20,6 +20,20 @@ pub struct Card {
     pub radius: f32,
     /// RGBA
     pub bg: [u8; 4],
+}
+
+/// 卡片底部的倒计时进度条，`value` 从 1 递减到 0。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Progress {
+    pub value: f32,
+    pub color: [u8; 4],
+}
+
+/// 卡片右上角的关闭叉。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloseMark {
+    pub rect: RectF,
+    pub color: [u8; 4],
 }
 
 /// 一张已经排版好的 8 位 alpha 掩膜。
@@ -40,6 +54,23 @@ pub struct Frame<'a> {
     pub ring: Option<Ring>,
     pub card: Option<Card>,
     pub text: Option<TextLayer<'a>>,
+    pub progress: Option<Progress>,
+    pub close: Option<CloseMark>,
+}
+
+impl Frame<'_> {
+    /// 只画一个框时的最小帧。
+    pub fn empty(width: u32, height: u32) -> Frame<'static> {
+        Frame {
+            width,
+            height,
+            ring: None,
+            card: None,
+            text: None,
+            progress: None,
+            close: None,
+        }
+    }
 }
 
 /// 画一帧，返回预乘 BGRA（可直接交给 `UpdateLayeredWindow`）。
@@ -49,14 +80,20 @@ pub fn render_frame(spec: &Frame<'_>) -> Option<Vec<u8>> {
     }
     let mut pixmap = Pixmap::new(spec.width, spec.height)?;
 
-    if let Some(ring) = spec.ring {
-        draw_ring(&mut pixmap, &ring);
-    }
     if let Some(card) = spec.card {
         draw_card(&mut pixmap, &card);
     }
+    if let (Some(card), Some(progress)) = (spec.card, spec.progress) {
+        draw_progress(&mut pixmap, &card, &progress);
+    }
+    if let Some(ring) = spec.ring {
+        draw_ring(&mut pixmap, &ring);
+    }
     if let Some(text) = spec.text {
         blend_text(&mut pixmap, &text);
+    }
+    if let Some(close) = spec.close {
+        draw_close(&mut pixmap, &close);
     }
 
     Some(to_premultiplied_bgra(pixmap.data()))
@@ -139,6 +176,73 @@ fn draw_card(pixmap: &mut Pixmap, card: &Card) {
     );
 }
 
+fn draw_progress(pixmap: &mut Pixmap, card: &Card, progress: &Progress) {
+    let value = progress.value.clamp(0.0, 1.0);
+    if value <= 0.0 {
+        return;
+    }
+    let inset = card.radius.max(2.0) * 0.8;
+    let available = (card.rect.w - inset * 2.0).max(0.0);
+    let width = available * value;
+    if width < 0.5 {
+        return;
+    }
+    let height = 2.0;
+    let x = card.rect.x + inset;
+    let y = card.rect.bottom() - height - 2.0;
+    let Some(rect) = SkRect::from_xywh(x, y, width, height) else {
+        return;
+    };
+    let Some(path) = round_rect_path(rect, height / 2.0) else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(
+        progress.color[0],
+        progress.color[1],
+        progress.color[2],
+        progress.color[3],
+    );
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+fn draw_close(pixmap: &mut Pixmap, close: &CloseMark) {
+    let r = close.rect;
+    if r.w < 4.0 || r.h < 4.0 {
+        return;
+    }
+    let pad = r.w * 0.26;
+    let mut builder = PathBuilder::new();
+    builder.move_to(r.x + pad, r.y + pad);
+    builder.line_to(r.x + r.w - pad, r.y + r.h - pad);
+    builder.move_to(r.x + r.w - pad, r.y + pad);
+    builder.line_to(r.x + pad, r.y + r.h - pad);
+    let Some(path) = builder.finish() else {
+        return;
+    };
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(
+        close.color[0],
+        close.color[1],
+        close.color[2],
+        close.color[3],
+    );
+    paint.anti_alias = true;
+    let stroke = Stroke {
+        width: 1.6,
+        line_cap: LineCap::Round,
+        ..Stroke::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
 /// 把 alpha 掩膜以 `color` 合成进画布（预乘空间里做 over）。
 fn blend_text(pixmap: &mut Pixmap, text: &TextLayer<'_>) {
     if text.mask.len() < (text.mask_width * text.mask_height) as usize {
@@ -195,7 +299,7 @@ mod tests {
         buf[((y * w + x) * 4 + 3) as usize]
     }
 
-    fn ring_spec() -> Frame<'static> {
+    fn ring_frame() -> Frame<'static> {
         Frame {
             width: 100,
             height: 60,
@@ -205,14 +309,13 @@ mod tests {
                 radius: 10.0,
                 color: [255, 59, 48, 255],
             }),
-            card: None,
-            text: None,
+            ..Frame::empty(100, 60)
         }
     }
 
     #[test]
     fn ring_is_hollow() {
-        let buf = render_frame(&ring_spec()).unwrap();
+        let buf = render_frame(&ring_frame()).unwrap();
         assert_eq!(buf.len(), 100 * 60 * 4);
         assert_eq!(alpha_at(&buf, 100, 50, 30), 0, "中间必须是空的");
         assert!(alpha_at(&buf, 100, 50, 1) > 200, "上边框必须实心");
@@ -230,8 +333,7 @@ mod tests {
                 radius: 0.0,
                 color: [255, 0, 0, 255],
             }),
-            card: None,
-            text: None,
+            ..Frame::empty(32, 32)
         };
         let buf = render_frame(&spec).unwrap();
         let idx = ((32 + 16) * 4) as usize;
@@ -245,13 +347,12 @@ mod tests {
         let spec = Frame {
             width: 64,
             height: 64,
-            ring: None,
             card: Some(Card {
                 rect: RectF::new(16.0, 16.0, 32.0, 32.0),
                 radius: 6.0,
                 bg: [27, 27, 31, 240],
             }),
-            text: None,
+            ..Frame::empty(64, 64)
         };
         let buf = render_frame(&spec).unwrap();
         assert!(alpha_at(&buf, 64, 32, 32) > 200, "卡片内部应不透明");
@@ -264,8 +365,6 @@ mod tests {
         let spec = Frame {
             width: 32,
             height: 32,
-            ring: None,
-            card: None,
             text: Some(TextLayer {
                 rect: RectF::new(10.0, 10.0, 2.0, 2.0),
                 mask: &mask,
@@ -273,6 +372,7 @@ mod tests {
                 mask_height: 2,
                 color: [255, 255, 255, 255],
             }),
+            ..Frame::empty(32, 32)
         };
         let buf = render_frame(&spec).unwrap();
         let idx = ((10 * 32 + 10) * 4) as usize;
@@ -281,14 +381,42 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_frame_is_rejected() {
-        let spec = Frame {
-            width: 0,
-            height: 10,
-            ring: None,
-            card: None,
-            text: None,
+    fn progress_bar_shrinks_with_value() {
+        let card = Card {
+            rect: RectF::new(10.0, 10.0, 200.0, 60.0),
+            radius: 10.0,
+            bg: [0, 0, 0, 255],
         };
-        assert!(render_frame(&spec).is_none());
+        let full = Frame {
+            width: 220,
+            height: 80,
+            card: Some(card),
+            progress: Some(Progress {
+                value: 1.0,
+                color: [255, 59, 48, 255],
+            }),
+            ..Frame::empty(220, 80)
+        };
+        let bar_y = 10 + 60 - 2 - 2 + 1;
+        let buf = render_frame(&full).unwrap();
+        let idx_full = ((bar_y * 220 + 190) * 4) as usize;
+        // 满格时右端是进度条的红色（BGRA 里 R 通道为 255）
+        assert_eq!(buf[idx_full + 2], 255, "满格时右端有颜色");
+
+        let empty = Frame {
+            progress: Some(Progress {
+                value: 0.05,
+                color: [255, 59, 48, 255],
+            }),
+            ..full
+        };
+        let buf = render_frame(&empty).unwrap();
+        // 快结束时右端回到卡片底色，而不是红色
+        assert_ne!(buf[idx_full + 2], 255, "快结束时右端不该是进度条颜色");
+    }
+
+    #[test]
+    fn degenerate_frame_is_rejected() {
+        assert!(render_frame(&Frame::empty(0, 10)).is_none());
     }
 }

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use spotlight_core::geom::Rect;
 use spotlight_core::mask::subtract;
-use spotlight_platform::win::{MaskWindow, capture_rect, mean_diff, pump_for, screen_size};
+use spotlight_platform::win::{
+    MaskWindow, capture_rect, enable_dpi_awareness, mean_diff, pump_for, screen_size,
+};
 
 const REGION_W: i32 = 400;
 const REGION_H: i32 = 300;
@@ -25,6 +27,7 @@ fn fail(msg: &str) -> i32 {
 }
 
 pub fn run() -> i32 {
+    enable_dpi_awareness();
     let (sw, sh) = screen_size();
     if sw < REGION_W || sh < REGION_H {
         return fail("screen_too_small");

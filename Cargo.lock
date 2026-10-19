@@ -207,6 +207,7 @@ dependencies = [
 name = "spotlight-platform"
 version = "0.1.0"
 dependencies = [
+ "png",
  "spotlight-core",
  "windows-sys",
 ]

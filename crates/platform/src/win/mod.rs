@@ -6,27 +6,32 @@ pub mod effect;
 pub mod ipc;
 pub mod message;
 pub mod process;
+pub mod shot;
 pub mod text;
 
 use std::ffi::c_void;
-use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
 use spotlight_core::geom::Rect;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BitBlt, CAPTUREBLT, CreateCompatibleDC,
     CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetStockObject, ReleaseDC,
-    SRCCOPY, SelectObject,
+    SRCCOPY, ScreenToClient, SelectObject,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE,
-    GetSystemMetrics, GetWindowLongPtrW, LWA_ALPHA, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
-    SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GetCursorPos,
+    GetSystemMetrics, GetWindowLongPtrW, HTCLIENT, HTTRANSPARENT, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
+    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "SpotlightOverlayWindow";
@@ -37,9 +42,62 @@ fn wide(s: &str) -> Vec<u16> {
 
 static REGISTER: Once = Once::new();
 
+/// 唯一可点击的区域（客户区坐标）。只有卡片上的关闭按钮会填进来。
+static CLOSE_HIT: Mutex<Option<Rect>> = Mutex::new(None);
+/// 用户点了关闭按钮。主线程在 tick 里消费。
+static DISMISS_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_close_hit(rect: Option<Rect>) {
+    if let Ok(mut guard) = CLOSE_HIT.lock() {
+        *guard = rect;
+    }
+}
+
+pub fn take_dismiss_request() -> bool {
+    DISMISS_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+pub fn cursor_pos() -> (i32, i32) {
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        GetCursorPos(&mut pt);
+    }
+    (pt.x, pt.y)
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    // 遮罩窗口不需要任何自定义消息处理：背景由类画刷填充，其余交给默认过程。
-    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+    unsafe {
+        match msg {
+            // 除了关闭按钮，整块窗口对鼠标"不存在"。
+            WM_NCHITTEST => {
+                let hit = CLOSE_HIT.lock().ok().and_then(|guard| *guard);
+                if let Some(rect) = hit {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    ScreenToClient(hwnd, &mut pt);
+                    if rect.contains_point(pt.x, pt.y) {
+                        return HTCLIENT as LRESULT;
+                    }
+                }
+                HTTRANSPARENT as LRESULT
+            }
+            WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            WM_LBUTTONUP => {
+                let hit = CLOSE_HIT.lock().ok().and_then(|guard| *guard);
+                if let Some(rect) = hit {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    ScreenToClient(hwnd, &mut pt);
+                    if rect.contains_point(pt.x, pt.y) {
+                        DISMISS_REQUESTED.store(true, Ordering::SeqCst);
+                        return 0;
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
 }
 
 fn ensure_class() -> Result<(), String> {
@@ -163,6 +221,18 @@ impl Drop for MaskWindow {
             DestroyWindow(self.hwnd);
         }
     }
+}
+
+/// 必须在创建任何窗口之前调用。
+pub fn enable_dpi_awareness() {
+    unsafe {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
+/// 主屏 DPI 缩放，1.0 = 96 DPI。
+pub fn primary_scale() -> f32 {
+    unsafe { GetDpiForSystem() as f32 / 96.0 }
 }
 
 pub fn screen_size() -> (i32, i32) {

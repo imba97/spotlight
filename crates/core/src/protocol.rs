@@ -22,6 +22,12 @@ pub mod codes {
     pub const NO_SUCH_KEY: &str = "no_such_key";
     pub const INTERNAL: &str = "internal";
     pub const TIMEOUT: &str = "timeout";
+    /// 坐标空间没声明（既没 `--capture` 也没 `--space screen`）。
+    pub const SPACE_UNSPECIFIED: &str = "space_unspecified";
+    /// 引用了不存在的 capture id（可能已过期）。
+    pub const UNKNOWN_CAPTURE: &str = "unknown_capture";
+    /// 截图失败。
+    pub const CAPTURE_FAILED: &str = "capture_failed";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +36,7 @@ pub enum Method {
     Show,
     Clear,
     Status,
+    Capture,
     Ping,
 }
 
@@ -139,6 +146,12 @@ impl ErrorBody {
 pub struct ShowParams {
     /// 屏幕物理像素：`[x, y, w, h]`。
     pub rect: [i32; 4],
+    /// 坐标是在哪张截图里量的。与 `space` 二选一。
+    #[serde(default)]
+    pub capture: Option<String>,
+    /// `"screen"` 表示坐标已是屏幕物理像素。与 `capture` 二选一。
+    #[serde(default)]
+    pub space: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
@@ -180,6 +193,59 @@ pub struct SceneSummary {
     pub targets: usize,
     pub has_text: bool,
     pub remaining_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CaptureParams {
+    /// 长边上限，默认 1280。
+    #[serde(default)]
+    pub max_width: Option<u32>,
+    /// 只截某块屏；缺省 = 主屏。
+    #[serde(default)]
+    pub monitor: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptureInfo {
+    pub capture: String,
+    pub image: CaptureImage,
+    pub monitors: Vec<MonitorInfo>,
+    /// 图与屏的分段对应关系。
+    pub segments: Vec<SegmentInfo>,
+    pub virtual_screen: RectInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptureImage {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    pub index: u32,
+    pub name: String,
+    pub primary: bool,
+    /// `[x, y, w, h]`，物理像素。
+    pub bounds: [i32; 4],
+    pub work: [i32; 4],
+    pub scale: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    pub monitor: u32,
+    pub image_rect: [i32; 4],
+    pub screen_rect: [i32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RectInfo {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 #[cfg(test)]

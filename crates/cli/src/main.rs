@@ -8,7 +8,9 @@ mod probe;
 use std::process::exit;
 
 use serde_json::json;
-use spotlight_core::protocol::{ClearParams, Method, Request, Response, ShowParams, codes};
+use spotlight_core::protocol::{
+    CaptureParams, ClearParams, Method, Request, Response, ShowParams, codes,
+};
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -21,6 +23,7 @@ fn main() {
         "daemon" => daemon::run(),
         "probe" => probe::run(),
         "show" => cmd_show(&argv[1..]),
+        "capture" => cmd_capture(&argv[1..]),
         "clear" => cmd_clear(&argv[1..]),
         "status" => cmd_status(&argv[1..]),
         "help" | "-h" | "--help" => {
@@ -45,14 +48,22 @@ fn usage() {
         "spotlight <命令> [参数]
 
 命令:
+  capture  截一张图并返回坐标映射
   show     高亮一个区域
   clear    清除当前画面
   status   查看守护进程与当前画面
   daemon   前台运行守护进程（内部用）
   probe    技术验证探针
 
+capture 参数:
+  --max-width <像素>   长边上限，默认 1280
+  --monitor <序号>     只截某块屏，默认主屏
+  --json               机器可读输出
+
 show 参数:
-  --rect x,y,w,h       目标矩形，屏幕物理像素（必填）
+  --rect x,y,w,h       目标矩形（必填）
+  --capture <id>       坐标来自哪张截图（推荐）
+  --space screen       或：坐标已经是屏幕物理像素
   --text <文案>        显示在卡片里
   --title <标题>       卡片标题
   --step <如 1/3>      步骤标记
@@ -85,6 +96,8 @@ fn cmd_show(rest: &[String]) -> i32 {
 
     let params = ShowParams {
         rect,
+        capture: parsed.value("capture").map(str::to_string),
+        space: parsed.value("space").map(str::to_string),
         text: parsed.value("text").map(str::to_string),
         title: parsed.value("title").map(str::to_string),
         step: parsed.value("step").map(str::to_string),
@@ -96,6 +109,31 @@ fn cmd_show(rest: &[String]) -> i32 {
     };
 
     let req = Request::new(1, Method::Show, Some(json!(params)));
+    dispatch(req, parsed.flag("json"))
+}
+
+fn cmd_capture(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+    let max_width = match parsed.value("max-width") {
+        None => None,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(v) => Some(v),
+            Err(_) => return usage_error("--max-width 需要正整数"),
+        },
+    };
+    let monitor = match parsed.value("monitor") {
+        None => None,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(v) => Some(v),
+            Err(_) => return usage_error("--monitor 需要非负整数"),
+        },
+    };
+
+    let params = CaptureParams { max_width, monitor };
+    let req = Request::new(1, Method::Capture, Some(json!(params)));
     dispatch(req, parsed.flag("json"))
 }
 
@@ -175,6 +213,22 @@ fn human_ok(resp: &Response) {
 
     if let Some(ms) = result.get("timeout_ms").and_then(|v| v.as_u64()) {
         println!("已显示，{:.1} 秒后自动消失", ms as f64 / 1000.0);
+    } else if let Some(capture) = result.get("capture").and_then(|v| v.as_str()) {
+        let image = result.get("image");
+        let path = image
+            .and_then(|i| i.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let width = image
+            .and_then(|i| i.get("width"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let height = image
+            .and_then(|i| i.get("height"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!("截图 {capture}（{width}×{height}）: {path}");
+        println!("下一步: spotlight show --capture {capture} --rect x,y,w,h --text \"点这里\"");
     } else if let Some(scene) = result.get("scene").and_then(|v| v.as_str()) {
         println!("已显示 {scene}");
     } else if result.get("cleared").is_some() {
@@ -223,6 +277,7 @@ fn exit_code_for(code: &str) -> i32 {
         codes::RECT_OUT_OF_BOUNDS => 3,
         codes::UNSUPPORTED_VERSION | codes::TIMEOUT => 4,
         codes::NO_SUCH_KEY => 5,
+        codes::SPACE_UNSPECIFIED | codes::UNKNOWN_CAPTURE | codes::CAPTURE_FAILED => 3,
         _ => 1,
     }
 }

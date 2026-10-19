@@ -34,11 +34,7 @@ impl EffectWindow {
 
         unsafe {
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED
-                    | WS_EX_TRANSPARENT
-                    | WS_EX_NOACTIVATE
-                    | WS_EX_TOOLWINDOW
-                    | WS_EX_TOPMOST,
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 class.as_ptr(),
                 title.as_ptr(),
                 WS_POPUP,

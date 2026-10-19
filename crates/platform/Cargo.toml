@@ -8,6 +8,7 @@ description = "Spotlight 的平台层：窗口、截图、显示器、IPC"
 
 [dependencies]
 spotlight-core = { workspace = true }
+png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -19,5 +20,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
