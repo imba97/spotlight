@@ -485,7 +485,12 @@ mod tests {
         };
         let effects = build_effects(&["arrow".to_string()], &EffectStyle::default());
         let buf = render_frame(260, 220, &[target], &effects, &ctx, 1.0).unwrap();
-        let painted = buf.as_chunks::<4>().0.iter().filter(|px| px[3] > 40).count();
+        let painted = buf
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 40)
+            .count();
         assert_eq!(painted, 0, "贴在一起时不该画箭头");
     }
     #[test]
@@ -508,7 +513,12 @@ mod tests {
         let buf = render_frame(160, 140, &[target], &effects, &ctx, 1.0).unwrap();
 
         // 圈上至少有一批不透明像素，且中间是空的
-        let painted = buf.as_chunks::<4>().0.iter().filter(|px| px[3] > 100).count();
+        let painted = buf
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 100)
+            .count();
         assert!(painted > 100, "应该画出笔画，实际 {painted}");
         assert_eq!(solid_alpha(&buf, 160, 70, 60), 0, "圈内应当透出背景");
     }

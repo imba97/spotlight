@@ -152,6 +152,63 @@ mod tests {
     const SIZE: Size = Size::new(300, 100);
 
     #[test]
+    fn random_layouts_keep_their_invariants() {
+        let mut seed: u32 = 0x9E37_79B9;
+        let mut rng = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as i32
+        };
+
+        let work = Rect::new(0, 0, 1920, 1080);
+        let preferences = [
+            Preference::Auto,
+            Preference::Side(Placement::Top),
+            Preference::Side(Placement::Bottom),
+            Preference::Side(Placement::Left),
+            Preference::Side(Placement::Right),
+        ];
+
+        for _ in 0..300 {
+            let target = Rect::new(rng() % 1900, rng() % 1060, rng() % 400 + 1, rng() % 300 + 1);
+            let size = Size::new(rng() % 500 + 40, rng() % 300 + 30);
+            let gap = rng() % 20;
+
+            let mut fits_seen = None;
+            for preference in preferences {
+                let placed = place_preferring(target, size, work, gap, preference);
+
+                // 结果永远落在 work area 内，且尺寸不变
+                assert!(work.contains_rect(placed.rect), "越界: {placed:?}");
+                assert_eq!((placed.rect.w, placed.rect.h), (size.w, size.h));
+
+                // "放得下"就必须真的没压住目标
+                if placed.fits {
+                    assert!(!placed.rect.intersects(target), "压住目标: {placed:?}");
+                }
+
+                // 偏好只影响选哪边，不影响"能不能放下"
+                match fits_seen {
+                    None => fits_seen = Some(placed.fits),
+                    Some(expected) => assert_eq!(placed.fits, expected, "偏好改变了可行性"),
+                }
+            }
+
+            // 指定方位可用时，必须真的用那个方位
+            for side in [
+                Placement::Top,
+                Placement::Bottom,
+                Placement::Left,
+                Placement::Right,
+            ] {
+                let candidate_rect = candidate(target, size, gap, side).shift_into(work);
+                if work.contains_rect(candidate_rect) && !candidate_rect.intersects(target) {
+                    let placed = place_preferring(target, size, work, gap, Preference::Side(side));
+                    assert_eq!(placed.placement, side, "首选方位可用却没被采用");
+                }
+            }
+        }
+    }
+    #[test]
     fn preference_puts_the_requested_side_first() {
         let target = Rect::new(860, 490, 200, 100);
         let top = place_preferring(target, SIZE, WORK, 8, Preference::Side(Placement::Top));

@@ -151,7 +151,7 @@ dismiss = "Ctrl+Alt+Esc" # 关闭当前画面的全局热键
 需要 Rust **1.88+**（MSRV 已用该版本实测通过），Windows 下直接构建：
 
 ```
-cargo test                   # 108 个测试，含 CLI 集成测试
+cargo test                   # 覆盖 core / render / platform / CLI 四层
 cargo build --release        # 产物在 target/release/spotlight.exe
 ```
 
