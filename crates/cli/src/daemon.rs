@@ -18,7 +18,7 @@ use spotlight_core::protocol::{
     RectInfo, Request, Response, SceneSummary, SegmentInfo, ShowParams, ShowResult, StatusResult,
     codes,
 };
-use spotlight_core::scene::{Callout, Scene};
+use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
 use spotlight_platform::win::effect::EffectWindow;
 use spotlight_platform::win::ipc::{self, Connection, Server};
@@ -30,13 +30,13 @@ use spotlight_platform::win::{
     MaskWindow, cursor_pos, enable_dpi_awareness, primary_scale, screen_size, set_close_hit,
     take_dismiss_request,
 };
-use spotlight_render::{Card, CloseMark, Frame, Progress, Ring, TextLayer, render_frame};
+use spotlight_render::{
+    Card, CloseMark, Ctx, Effect, Progress, TextLayer, build_effects, render_frame,
+};
 
 const DIM_ALPHA: u8 = 140;
 /// 洞相对目标的 padding。
 const PAD: i32 = 6;
-const RING_STROKE: f32 = 3.0;
-const RING_RADIUS: f32 = 10.0;
 const ACCENT: [u8; 4] = [255, 59, 48, 255];
 const CARD_BG: [u8; 4] = [27, 27, 31, 240];
 const CARD_RADIUS: f32 = 10.0;
@@ -64,10 +64,10 @@ struct Job {
 }
 
 /// 画面上各元素相对效果窗口的位置（客户区坐标）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Geom {
     union: Rect,
-    ring: Rect,
+    targets: Vec<Rect>,
     card: Option<Rect>,
     close: Option<Rect>,
     text_at: Option<(f32, f32)>,
@@ -83,6 +83,7 @@ struct Active {
     card_screen: Option<Rect>,
     geom: Geom,
     text: Option<TextBitmap>,
+    effects: Vec<Box<dyn Effect>>,
     effect: EffectWindow,
     _masks: Vec<MaskWindow>,
 }
@@ -258,8 +259,25 @@ impl State {
     }
 
     fn show(&mut self, p: ShowParams) -> Result<ShowResult, ErrorBody> {
-        let rect = self.resolve_rect(&p)?;
-        if rect.is_empty() {
+        // 单个 --rect、多个 --rect、以及 targets 数组都合并到这里。
+        let mut requested: Vec<([i32; 4], Option<String>)> = Vec::new();
+        if let Some(rect) = p.rect {
+            requested.push((rect, None));
+        }
+        for target in &p.targets {
+            requested.push((target.rect, target.step.clone()));
+        }
+        if requested.is_empty() {
+            return Err(
+                ErrorBody::new(codes::BAD_PARAMS, "没有目标").with_hint("至少给一个 --rect")
+            );
+        }
+
+        let mut rects = Vec::with_capacity(requested.len());
+        for (raw, _) in &requested {
+            rects.push(self.resolve_one(&p, *raw)?);
+        }
+        if rects.iter().any(|r| r.is_empty()) {
             return Err(
                 ErrorBody::new(codes::BAD_PARAMS, "矩形为空").with_hint("w 和 h 必须大于 0")
             );
@@ -267,20 +285,33 @@ impl State {
 
         let (screen_w, screen_h) = screen_size();
         let bounds = Rect::new(0, 0, screen_w, screen_h);
-        if !bounds.contains_rect(rect) {
-            return Err(
-                ErrorBody::new(codes::RECT_OUT_OF_BOUNDS, "矩形超出屏幕范围").with_hint(format!(
-                    "当前屏幕是 {screen_w}×{screen_h}，请重新截图后按图像像素给坐标"
-                )),
-            );
+        for rect in &rects {
+            if !bounds.contains_rect(*rect) {
+                return Err(
+                    ErrorBody::new(codes::RECT_OUT_OF_BOUNDS, "矩形超出屏幕范围").with_hint(
+                        format!("当前屏幕是 {screen_w}×{screen_h}，请重新截图后按图像像素给坐标"),
+                    ),
+                );
+            }
         }
 
-        let mut scene = Scene::new(ScreenRect::from_rect(rect));
-        scene.key = p.key.clone();
-        scene.timeout = match p.timeout {
-            None => Timeout::Auto,
-            Some(secs) if secs <= 0.0 => Timeout::Sticky,
-            Some(secs) => Timeout::Seconds(secs),
+        let mut scene = Scene {
+            key: p.key.clone(),
+            targets: rects
+                .iter()
+                .zip(requested.iter())
+                .map(|(rect, (_, step))| {
+                    let mut target = Target::new(ScreenRect::from_rect(*rect));
+                    target.step = step.clone();
+                    target
+                })
+                .collect(),
+            callout: None,
+            timeout: match p.timeout {
+                None => Timeout::Auto,
+                Some(secs) if secs <= 0.0 => Timeout::Sticky,
+                Some(secs) => Timeout::Seconds(secs),
+            },
         };
         if let Some(text) = p.text.clone() {
             scene.callout = Some(Callout {
@@ -288,24 +319,29 @@ impl State {
                 text,
             });
         }
-        if let Some(step) = p.step.clone() {
-            if let Some(target) = scene.targets.first_mut() {
-                target.step = Some(step);
-            }
-        }
         scene
             .validate()
             .map_err(|e| ErrorBody::new(codes::BAD_PARAMS, e.to_string()))?;
 
         // 先算几何，再建窗口——任何一步失败都不会留下半截画面。
-        let ring_rect = rect.inflate(PAD + RING_STROKE as i32);
+        let effects = build_effects(&p.effects);
+        let margin = effects
+            .iter()
+            .map(|e| e.margin())
+            .fold(0.0_f32, f32::max)
+            .ceil() as i32
+            + 2;
+
         let text_bitmap = scene
             .callout
             .as_ref()
             .and_then(|c| render_text(&c.text, MAX_TEXT_WIDTH, FONT_PX));
+
+        // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
+        let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
         let card_rect = text_bitmap.as_ref().map(|tb| {
             place(
-                rect,
+                target_union,
                 Size::new(
                     tb.width as i32 + CARD_PADDING + CARD_PADDING_RIGHT,
                     tb.height as i32 + CARD_PADDING * 2,
@@ -316,7 +352,9 @@ impl State {
             .rect
         });
 
-        let mut union = ring_rect;
+        let mut union = rects
+            .iter()
+            .fold(Rect::ZERO, |acc, r| acc.union(r.inflate(margin)));
         if let Some(card) = card_rect {
             union = union.union(card);
         }
@@ -342,7 +380,7 @@ impl State {
 
         let geom = Geom {
             union,
-            ring: offset(ring_rect),
+            targets: rects.iter().map(|r| offset(*r)).collect(),
             card: card_rect.map(offset),
             close: close_mark.map(offset),
             text_at: card_rect.map(|card| {
@@ -365,6 +403,7 @@ impl State {
             card_screen: card_rect,
             geom,
             text: text_bitmap,
+            effects,
             effect: EffectWindow::new(union).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?,
             _masks: Vec::new(),
         };
@@ -375,7 +414,9 @@ impl State {
 
         self.clear_all();
 
-        let holes = [rect.inflate(PAD)];
+        // 洞只比目标大一点点：圆形的圈画应当落在压暗的背景上，而不是落在一块亮矩形里。
+        let hole_pad = PAD;
+        let holes: Vec<Rect> = rects.iter().map(|r| r.inflate(hole_pad)).collect();
         let mut masks = Vec::new();
         for r in &subtract(bounds, &holes) {
             let window =
@@ -411,14 +452,14 @@ impl State {
     }
 
     /// 把调用方给的矩形换算成屏幕物理像素。D5a：必须显式声明坐标空间。
-    fn resolve_rect(&self, p: &ShowParams) -> Result<Rect, ErrorBody> {
+    fn resolve_one(&self, p: &ShowParams, rect: [i32; 4]) -> Result<Rect, ErrorBody> {
         if let Some(capture_id) = &p.capture {
             let map = self.find_capture(capture_id).ok_or_else(|| {
                 ErrorBody::new(codes::UNKNOWN_CAPTURE, format!("找不到截图 {capture_id}"))
                     .with_hint("截图可能已过期，重新运行 spotlight capture")
             })?;
             let mapped = map
-                .to_screen(ImageRect::new(p.rect[0], p.rect[1], p.rect[2], p.rect[3]))
+                .to_screen(ImageRect::new(rect[0], rect[1], rect[2], rect[3]))
                 .map_err(|e| {
                     ErrorBody::new(codes::BAD_PARAMS, e.to_string())
                         .with_hint("坐标必须落在截图范围内")
@@ -427,7 +468,7 @@ impl State {
         }
 
         if p.space.as_deref() == Some("screen") {
-            return Ok(Rect::new(p.rect[0], p.rect[1], p.rect[2], p.rect[3]));
+            return Ok(Rect::new(rect[0], rect[1], rect[2], rect[3]));
         }
 
         Err(
@@ -460,15 +501,7 @@ fn render_active(active: &Active) -> Option<Vec<u8>> {
         _ => None,
     };
 
-    let frame = Frame {
-        width: active.geom.union.w as u32,
-        height: active.geom.union.h as u32,
-        ring: Some(Ring {
-            rect: RectF::from_rect(active.geom.ring),
-            stroke: RING_STROKE,
-            radius: RING_RADIUS,
-            color: ACCENT,
-        }),
+    let ctx = Ctx {
         card: active.geom.card.map(|c| Card {
             rect: RectF::from_rect(c),
             radius: CARD_RADIUS,
@@ -490,7 +523,21 @@ fn render_active(active: &Active) -> Option<Vec<u8>> {
             color: [255, 255, 255, 150],
         }),
     };
-    render_frame(&frame)
+
+    let targets: Vec<RectF> = active
+        .geom
+        .targets
+        .iter()
+        .map(|r| RectF::from_rect(*r))
+        .collect();
+
+    render_frame(
+        active.geom.union.w as u32,
+        active.geom.union.h as u32,
+        &targets,
+        &active.effects,
+        &ctx,
+    )
 }
 
 fn repaint(active: &Active) {

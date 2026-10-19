@@ -2,17 +2,25 @@
 //!
 //! 不引入 clap：这不是省 300KB 的问题，而是这个 CLI 的参数面就十来个，
 //! 手写更容易控制"缺参数时报什么错"——而错误信息是给模型看的。
+//!
+//! 同一个开关可以重复出现（`--rect a --rect b`），重复值收在 `multi` 里。
 
 use std::collections::{HashMap, HashSet};
 
 pub struct Parsed {
     pub values: HashMap<String, String>,
+    pub multi: HashMap<String, Vec<String>>,
     pub switches: HashSet<String>,
 }
 
 impl Parsed {
     pub fn value(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
+    }
+
+    /// 某个开关出现过的所有值，按出现顺序。
+    pub fn all(&self, key: &str) -> &[String] {
+        self.multi.get(key).map_or(&[], Vec::as_slice)
     }
 
     pub fn flag(&self, key: &str) -> bool {
@@ -22,6 +30,7 @@ impl Parsed {
 
 pub fn parse(tokens: &[String]) -> Result<Parsed, String> {
     let mut values = HashMap::new();
+    let mut multi: HashMap<String, Vec<String>> = HashMap::new();
     let mut switches = HashSet::new();
     let mut it = tokens.iter().peekable();
 
@@ -33,23 +42,39 @@ pub fn parse(tokens: &[String]) -> Result<Parsed, String> {
             return Err("空的参数名".into());
         }
 
-        if let Some((key, value)) = name.split_once('=') {
-            values.insert(key.to_string(), value.to_string());
-            continue;
-        }
+        let (key, inline) = match name.split_once('=') {
+            Some((key, value)) => (key.to_string(), Some(value.to_string())),
+            None => (name.to_string(), None),
+        };
 
-        match it.peek() {
-            Some(next) if !next.starts_with("--") => {
-                values.insert(name.to_string(), (*next).clone());
-                it.next();
+        let value = match inline {
+            Some(value) => Some(value),
+            None => match it.peek() {
+                Some(next) if !next.starts_with("--") => {
+                    let value = (*next).clone();
+                    it.next();
+                    Some(value)
+                }
+                _ => None,
+            },
+        };
+
+        match value {
+            Some(value) => {
+                multi.entry(key.clone()).or_default().push(value.clone());
+                values.insert(key, value);
             }
-            _ => {
-                switches.insert(name.to_string());
+            None => {
+                switches.insert(key);
             }
         }
     }
 
-    Ok(Parsed { values, switches })
+    Ok(Parsed {
+        values,
+        multi,
+        switches,
+    })
 }
 
 /// 解析 `"x,y,w,h"`。
@@ -94,6 +119,16 @@ mod tests {
         let p = parse(&toks("--json --rect 1,2,3,4")).unwrap();
         assert!(p.flag("json"));
         assert_eq!(p.value("rect"), Some("1,2,3,4"));
+    }
+
+    #[test]
+    fn repeated_flags_are_collected() {
+        let p = parse(&toks("--rect 1,2,3,4 --rect 5,6,7,8 --effect brush")).unwrap();
+        assert_eq!(p.all("rect").len(), 2);
+        assert_eq!(p.all("rect")[1], "5,6,7,8");
+        assert_eq!(p.all("effect"), ["brush".to_string()]);
+        // 最后一次的值仍然可以从 value 取到
+        assert_eq!(p.value("rect"), Some("5,6,7,8"));
     }
 
     #[test]

@@ -1,18 +1,14 @@
-//! 光栅化层：把一帧的矢量描述画成**预乘 BGRA** 位图，交给平台层提交。
+//! 光栅化层：把一帧画成**预乘 BGRA** 位图，交给平台层提交。
 //!
+//! 一帧 = 卡片（可选）+ 每个目标上的效果链 + 文字（可选）+ 关闭叉（可选）。
 //! 这一层不碰窗口、不碰屏幕，是纯函数，所以可以在没有桌面的环境里做快照测试。
 
-use spotlight_core::geom::RectF;
-use tiny_skia::{LineCap, Paint, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};
+mod effect;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ring {
-    pub rect: RectF,
-    pub stroke: f32,
-    pub radius: f32,
-    /// RGBA
-    pub color: [u8; 4],
-}
+pub use effect::{Brush, Effect, KNOWN_EFFECTS, Ring, build_effects};
+
+use spotlight_core::geom::RectF;
+use tiny_skia::{LineCap, Paint, Path, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Card {
@@ -47,73 +43,83 @@ pub struct TextLayer<'a> {
     pub color: [u8; 4],
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Frame<'a> {
-    pub width: u32,
-    pub height: u32,
-    pub ring: Option<Ring>,
+/// 与效果无关的附属元素。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ctx<'a> {
     pub card: Option<Card>,
     pub text: Option<TextLayer<'a>>,
     pub progress: Option<Progress>,
     pub close: Option<CloseMark>,
 }
 
-impl Frame<'_> {
-    /// 只画一个框时的最小帧。
-    pub fn empty(width: u32, height: u32) -> Frame<'static> {
-        Frame {
+/// 效果可以往这里画。坐标是效果窗口的客户区坐标。
+pub struct Canvas<'a> {
+    pixmap: &'a mut Pixmap,
+}
+
+impl Canvas<'_> {
+    pub fn fill_round_rect(&mut self, rect: RectF, radius: f32, color: [u8; 4]) {
+        let Some(path) = sk_round_rect(rect, radius) else {
+            return;
+        };
+        let p = paint(color);
+        self.pixmap.fill_path(
+            &path,
+            &p,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    pub fn stroke_round_rect(&mut self, rect: RectF, radius: f32, width: f32, color: [u8; 4]) {
+        let Some(path) = sk_round_rect(rect, radius) else {
+            return;
+        };
+        let stroke = Stroke {
             width,
-            height,
-            ring: None,
-            card: None,
-            text: None,
-            progress: None,
-            close: None,
-        }
+            ..Stroke::default()
+        };
+        self.stroke_path(&path, &stroke, color);
+    }
+
+    pub fn stroke_path(&mut self, path: &Path, stroke: &Stroke, color: [u8; 4]) {
+        let paint = paint(color);
+        self.pixmap
+            .stroke_path(path, &paint, stroke, Transform::identity(), None);
+    }
+
+    pub fn width(&self) -> u32 {
+        self.pixmap.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.pixmap.height()
     }
 }
 
-/// 画一帧，返回预乘 BGRA（可直接交给 `UpdateLayeredWindow`）。
-pub fn render_frame(spec: &Frame<'_>) -> Option<Vec<u8>> {
-    if spec.width == 0 || spec.height == 0 {
-        return None;
-    }
-    let mut pixmap = Pixmap::new(spec.width, spec.height)?;
-
-    if let Some(card) = spec.card {
-        draw_card(&mut pixmap, &card);
-    }
-    if let (Some(card), Some(progress)) = (spec.card, spec.progress) {
-        draw_progress(&mut pixmap, &card, &progress);
-    }
-    if let Some(ring) = spec.ring {
-        draw_ring(&mut pixmap, &ring);
-    }
-    if let Some(text) = spec.text {
-        blend_text(&mut pixmap, &text);
-    }
-    if let Some(close) = spec.close {
-        draw_close(&mut pixmap, &close);
-    }
-
-    Some(to_premultiplied_bgra(pixmap.data()))
+fn paint(color: [u8; 4]) -> Paint<'static> {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
+    paint.anti_alias = true;
+    paint
 }
 
-fn round_rect_path(rect: SkRect, radius: f32) -> Option<tiny_skia::Path> {
-    let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
-    if w <= 0.0 || h <= 0.0 {
+fn sk_round_rect(rect: RectF, radius: f32) -> Option<Path> {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
         return None;
     }
-    let r = radius.clamp(0.0, w.min(h) / 2.0);
+    let r = radius.clamp(0.0, rect.w.min(rect.h) / 2.0);
     let mut builder = PathBuilder::new();
     if r <= 0.0 {
-        builder.push_rect(rect);
+        builder.push_rect(SkRect::from_xywh(rect.x, rect.y, rect.w, rect.h)?);
         return builder.finish();
     }
     // 四个圆角用三次贝塞尔近似 90° 圆弧
     const KAPPA: f32 = 0.552_284_8;
     let k = KAPPA * r;
-    let (right, bottom) = (x + w, y + h);
+    let (x, y) = (rect.x, rect.y);
+    let (right, bottom) = (rect.right(), rect.bottom());
     builder.move_to(x + r, y);
     builder.line_to(right - r, y);
     builder.cubic_to(right - r + k, y, right, y + r - k, right, y + r);
@@ -134,42 +140,55 @@ fn round_rect_path(rect: SkRect, radius: f32) -> Option<tiny_skia::Path> {
     builder.finish()
 }
 
-fn draw_ring(pixmap: &mut Pixmap, ring: &Ring) {
-    let inset = ring.stroke / 2.0;
-    let Some(rect) = SkRect::from_xywh(
-        ring.rect.x + inset,
-        ring.rect.y + inset,
-        ring.rect.w - ring.stroke,
-        ring.rect.h - ring.stroke,
-    ) else {
-        return;
-    };
-    let Some(path) = round_rect_path(rect, ring.radius) else {
-        return;
-    };
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(ring.color[0], ring.color[1], ring.color[2], ring.color[3]);
-    paint.anti_alias = true;
-    let stroke = Stroke {
-        width: ring.stroke,
-        ..Stroke::default()
-    };
-    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+/// 画一帧，返回预乘 BGRA（可直接交给 `UpdateLayeredWindow`）。
+pub fn render_frame(
+    width: u32,
+    height: u32,
+    targets: &[RectF],
+    effects: &[Box<dyn Effect>],
+    ctx: &Ctx<'_>,
+) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut pixmap = Pixmap::new(width, height)?;
+
+    if let Some(card) = ctx.card {
+        draw_card(&mut pixmap, &card);
+    }
+    if let (Some(card), Some(progress)) = (ctx.card, ctx.progress) {
+        draw_progress(&mut pixmap, &card, &progress);
+    }
+
+    {
+        let mut canvas = Canvas {
+            pixmap: &mut pixmap,
+        };
+        for target in targets {
+            for effect in effects {
+                effect.draw(&mut canvas, *target, ctx);
+            }
+        }
+    }
+
+    if let Some(text) = ctx.text {
+        blend_text(&mut pixmap, &text);
+    }
+    if let Some(close) = ctx.close {
+        draw_close(&mut pixmap, &close);
+    }
+
+    Some(to_premultiplied_bgra(pixmap.data()))
 }
 
 fn draw_card(pixmap: &mut Pixmap, card: &Card) {
-    let Some(rect) = SkRect::from_xywh(card.rect.x, card.rect.y, card.rect.w, card.rect.h) else {
+    let Some(path) = sk_round_rect(card.rect, card.radius) else {
         return;
     };
-    let Some(path) = round_rect_path(rect, card.radius) else {
-        return;
-    };
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(card.bg[0], card.bg[1], card.bg[2], card.bg[3]);
-    paint.anti_alias = true;
+    let p = paint(card.bg);
     pixmap.fill_path(
         &path,
-        &paint,
+        &p,
         tiny_skia::FillRule::Winding,
         Transform::identity(),
         None,
@@ -188,25 +207,19 @@ fn draw_progress(pixmap: &mut Pixmap, card: &Card, progress: &Progress) {
         return;
     }
     let height = 2.0;
-    let x = card.rect.x + inset;
-    let y = card.rect.bottom() - height - 2.0;
-    let Some(rect) = SkRect::from_xywh(x, y, width, height) else {
-        return;
-    };
-    let Some(path) = round_rect_path(rect, height / 2.0) else {
-        return;
-    };
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(
-        progress.color[0],
-        progress.color[1],
-        progress.color[2],
-        progress.color[3],
+    let bar = RectF::new(
+        card.rect.x + inset,
+        card.rect.bottom() - height - 2.0,
+        width,
+        height,
     );
-    paint.anti_alias = true;
+    let Some(path) = sk_round_rect(bar, height / 2.0) else {
+        return;
+    };
+    let p = paint(progress.color);
     pixmap.fill_path(
         &path,
-        &paint,
+        &p,
         tiny_skia::FillRule::Winding,
         Transform::identity(),
         None,
@@ -227,20 +240,13 @@ fn draw_close(pixmap: &mut Pixmap, close: &CloseMark) {
     let Some(path) = builder.finish() else {
         return;
     };
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(
-        close.color[0],
-        close.color[1],
-        close.color[2],
-        close.color[3],
-    );
-    paint.anti_alias = true;
     let stroke = Stroke {
         width: 1.6,
         line_cap: LineCap::Round,
         ..Stroke::default()
     };
-    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    let p = paint(close.color);
+    pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
 }
 
 /// 把 alpha 掩膜以 `color` 合成进画布（预乘空间里做 over）。
@@ -299,62 +305,17 @@ mod tests {
         buf[((y * w + x) * 4 + 3) as usize]
     }
 
-    fn ring_frame() -> Frame<'static> {
-        Frame {
-            width: 100,
-            height: 60,
-            ring: Some(Ring {
-                rect: RectF::new(0.0, 0.0, 100.0, 60.0),
-                stroke: 3.0,
-                radius: 10.0,
-                color: [255, 59, 48, 255],
-            }),
-            ..Frame::empty(100, 60)
-        }
-    }
-
-    #[test]
-    fn ring_is_hollow() {
-        let buf = render_frame(&ring_frame()).unwrap();
-        assert_eq!(buf.len(), 100 * 60 * 4);
-        assert_eq!(alpha_at(&buf, 100, 50, 30), 0, "中间必须是空的");
-        assert!(alpha_at(&buf, 100, 50, 1) > 200, "上边框必须实心");
-        assert_eq!(alpha_at(&buf, 100, 0, 0), 0, "圆角外必须透明");
-    }
-
-    #[test]
-    fn color_channel_order_is_bgra() {
-        let spec = Frame {
-            width: 32,
-            height: 32,
-            ring: Some(Ring {
-                rect: RectF::new(0.0, 0.0, 32.0, 32.0),
-                stroke: 4.0,
-                radius: 0.0,
-                color: [255, 0, 0, 255],
-            }),
-            ..Frame::empty(32, 32)
-        };
-        let buf = render_frame(&spec).unwrap();
-        let idx = ((32 + 16) * 4) as usize;
-        assert_eq!(buf[idx], 0, "B 通道");
-        assert_eq!(buf[idx + 2], 255, "R 通道");
-        assert_eq!(buf[idx + 3], 255);
-    }
-
     #[test]
     fn card_is_filled_inside_and_clear_outside() {
-        let spec = Frame {
-            width: 64,
-            height: 64,
+        let ctx = Ctx {
             card: Some(Card {
                 rect: RectF::new(16.0, 16.0, 32.0, 32.0),
                 radius: 6.0,
                 bg: [27, 27, 31, 240],
             }),
-            ..Frame::empty(64, 64)
+            ..Ctx::default()
         };
-        let buf = render_frame(&spec).unwrap();
+        let buf = render_frame(64, 64, &[], &[], &ctx).unwrap();
         assert!(alpha_at(&buf, 64, 32, 32) > 200, "卡片内部应不透明");
         assert_eq!(alpha_at(&buf, 64, 2, 2), 0, "卡片外部应透明");
     }
@@ -362,9 +323,7 @@ mod tests {
     #[test]
     fn text_mask_is_blended() {
         let mask = vec![255u8; 4];
-        let spec = Frame {
-            width: 32,
-            height: 32,
+        let ctx = Ctx {
             text: Some(TextLayer {
                 rect: RectF::new(10.0, 10.0, 2.0, 2.0),
                 mask: &mask,
@@ -372,9 +331,9 @@ mod tests {
                 mask_height: 2,
                 color: [255, 255, 255, 255],
             }),
-            ..Frame::empty(32, 32)
+            ..Ctx::default()
         };
-        let buf = render_frame(&spec).unwrap();
+        let buf = render_frame(32, 32, &[], &[], &ctx).unwrap();
         let idx = ((10 * 32 + 10) * 4) as usize;
         assert_eq!(buf[idx + 3], 255);
         assert_eq!(buf[idx], 255);
@@ -387,36 +346,32 @@ mod tests {
             radius: 10.0,
             bg: [0, 0, 0, 255],
         };
-        let full = Frame {
-            width: 220,
-            height: 80,
+        let full = Ctx {
             card: Some(card),
             progress: Some(Progress {
                 value: 1.0,
                 color: [255, 59, 48, 255],
             }),
-            ..Frame::empty(220, 80)
+            ..Ctx::default()
         };
         let bar_y = 10 + 60 - 2 - 2 + 1;
-        let buf = render_frame(&full).unwrap();
-        let idx_full = ((bar_y * 220 + 190) * 4) as usize;
-        // 满格时右端是进度条的红色（BGRA 里 R 通道为 255）
-        assert_eq!(buf[idx_full + 2], 255, "满格时右端有颜色");
+        let buf = render_frame(220, 80, &[], &[], &full).unwrap();
+        let idx = ((bar_y * 220 + 190) * 4) as usize;
+        assert_eq!(buf[idx + 2], 255, "满格时右端是进度条的红色");
 
-        let empty = Frame {
+        let short = Ctx {
             progress: Some(Progress {
                 value: 0.05,
                 color: [255, 59, 48, 255],
             }),
             ..full
         };
-        let buf = render_frame(&empty).unwrap();
-        // 快结束时右端回到卡片底色，而不是红色
-        assert_ne!(buf[idx_full + 2], 255, "快结束时右端不该是进度条颜色");
+        let buf = render_frame(220, 80, &[], &[], &short).unwrap();
+        assert_ne!(buf[idx + 2], 255, "快结束时右端回到卡片底色");
     }
 
     #[test]
     fn degenerate_frame_is_rejected() {
-        assert!(render_frame(&Frame::empty(0, 10)).is_none());
+        assert!(render_frame(0, 10, &[], &[], &Ctx::default()).is_none());
     }
 }

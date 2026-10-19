@@ -144,8 +144,12 @@ impl ErrorBody {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShowParams {
-    /// 屏幕物理像素：`[x, y, w, h]`。
-    pub rect: [i32; 4],
+    /// 单个目标的屏幕物理像素 `[x, y, w, h]`。与 `targets` 至少给一个。
+    #[serde(default)]
+    pub rect: Option<[i32; 4]>,
+    /// 多个目标。`--rect` 重复出现时使用。
+    #[serde(default)]
+    pub targets: Vec<TargetSpec>,
     /// 坐标是在哪张截图里量的。与 `space` 二选一。
     #[serde(default)]
     pub capture: Option<String>,
@@ -158,11 +162,21 @@ pub struct ShowParams {
     pub title: Option<String>,
     #[serde(default)]
     pub step: Option<String>,
+    /// 效果链名字；空 = 默认光环。显式给出时**替换**默认组合。
+    #[serde(default)]
+    pub effects: Vec<String>,
     /// `None` = 自动估算；`Some(0)` = 常驻。
     #[serde(default)]
     pub timeout: Option<f32>,
     #[serde(default)]
     pub key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TargetSpec {
+    pub rect: [i32; 4],
+    #[serde(default)]
+    pub step: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -288,7 +302,7 @@ mod tests {
             })),
         );
         let p: ShowParams = req.parse_params().unwrap();
-        assert_eq!(p.rect, [10, 20, 30, 40]);
+        assert_eq!(p.rect, Some([10, 20, 30, 40]));
         assert_eq!(p.text.as_deref(), Some("点这里"));
         assert_eq!(p.timeout, Some(0.0));
         assert_eq!(p.key, None);

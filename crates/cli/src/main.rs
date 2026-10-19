@@ -9,7 +9,7 @@ use std::process::exit;
 
 use serde_json::json;
 use spotlight_core::protocol::{
-    CaptureParams, ClearParams, Method, Request, Response, ShowParams, codes,
+    CaptureParams, ClearParams, Method, Request, Response, ShowParams, TargetSpec, codes,
 };
 
 fn main() {
@@ -61,7 +61,8 @@ capture 参数:
   --json               机器可读输出
 
 show 参数:
-  --rect x,y,w,h       目标矩形（必填）
+  --rect x,y,w,h       目标矩形（可重复给多个目标）
+  --effect <名字>      效果：ring（默认）/ brush，可重复
   --capture <id>       坐标来自哪张截图（推荐）
   --space screen       或：坐标已经是屏幕物理像素
   --text <文案>        显示在卡片里
@@ -79,13 +80,23 @@ fn cmd_show(rest: &[String]) -> i32 {
         Err(err) => return usage_error(&err),
     };
 
-    let Some(rect_raw) = parsed.value("rect") else {
-        return usage_error("show 需要 --rect x,y,w,h");
-    };
-    let rect = match args::parse_rect(rect_raw) {
-        Ok(r) => r,
-        Err(err) => return usage_error(&err),
-    };
+    if parsed.all("rect").is_empty() {
+        return usage_error("show 需要 --rect x,y,w,h（可重复）");
+    }
+
+    let mut targets = Vec::new();
+    for raw in parsed.all("rect") {
+        match args::parse_rect(raw) {
+            Ok(rect) => targets.push(TargetSpec { rect, step: None }),
+            Err(err) => return usage_error(&err),
+        }
+    }
+    if let Some(step) = parsed.value("step") {
+        if let Some(first) = targets.first_mut() {
+            first.step = Some(step.to_string());
+        }
+    }
+
     let timeout = match parsed.value("timeout") {
         None | Some("auto") => None,
         Some(raw) => match raw.parse::<f32>() {
@@ -95,12 +106,14 @@ fn cmd_show(rest: &[String]) -> i32 {
     };
 
     let params = ShowParams {
-        rect,
+        rect: None,
+        targets,
         capture: parsed.value("capture").map(str::to_string),
         space: parsed.value("space").map(str::to_string),
         text: parsed.value("text").map(str::to_string),
         title: parsed.value("title").map(str::to_string),
-        step: parsed.value("step").map(str::to_string),
+        step: None,
+        effects: parsed.all("effect").to_vec(),
         timeout,
         key: parsed
             .value("key")
