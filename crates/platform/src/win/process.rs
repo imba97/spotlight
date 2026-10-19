@@ -47,11 +47,36 @@ impl Drop for SingleInstance {
     }
 }
 
+/// 把本进程的标准句柄标记为不可继承。
+///
+/// `std::process::Command` 在 Windows 上总是带 `bInheritHandles=TRUE` 起进程，
+/// 于是调用方的 stdout 管道会被守护进程继承——只要守护进程活着，管道就不关闭，
+/// 调用方（比如 `spotlight ... | Out-Null`）会一直等下去。这就是之前偶发卡死的根因。
+fn detach_std_handles() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    unsafe {
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let handle = GetStdHandle(id);
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
 /// 拉起一个不占控制台的子进程（守护进程用）。
 pub fn spawn_detached(exe: &Path, args: &[&str]) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    detach_std_handles();
 
     std::process::Command::new(exe)
         .args(args)
