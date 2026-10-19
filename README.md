@@ -147,13 +147,19 @@ dismiss = "Ctrl+Alt+Esc" # 关闭当前画面的全局热键
 
 ## 开发
 
+需要 Rust **1.88+**（MSRV 已用该版本实测通过），Windows 下直接构建：
+
 ```
-cargo test           # 87 个单测
-cargo build --release
+cargo test                   # 108 个测试，含 CLI 集成测试
+cargo build --release        # 产物在 target/release/spotlight.exe
 ```
 
-设计文档在 [`ai-docs/design-docs`](ai-docs/design-docs/README.md)：
-为什么这么设计、坐标契约怎么定、安全边界在哪，都写在里面。
+release 配置是 `opt-level = "z"` + fat LTO + `panic = "abort"` + strip，
+产物约 0.9 MB。要再压体积可以装 `upx` 自行处理（不写进构建，免得杀软误报）。
+
+设计文档在 [`ai-docs/design-docs`](ai-docs/design-docs/README.md)：为什么这么设计、
+坐标契约怎么定、安全边界在哪，以及**哪些功能明确决定不做**。
+变更记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## License
 
