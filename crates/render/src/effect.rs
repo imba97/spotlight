@@ -98,6 +98,129 @@ impl Effect for Glow {
         }
     }
 }
+/// 从卡片指向目标的连线，末端带箭头。
+///
+/// 单目标时卡片总是贴着目标，画出来只有一截短棍——所以距离太近会直接跳过。
+/// 它的价值在多目标：一张卡片对应多个目标时，连起来才看得出"这张卡在说哪几处"。
+#[derive(Clone, Copy, Debug)]
+pub struct Arrow {
+    pub width: f32,
+    pub head: f32,
+    /// 目标那端要停在光环外沿，不能戳进内容里。
+    pub tip: f32,
+    /// 连线最短长度；低于它就认为卡片已经贴着目标，不画。
+    pub min_length: f32,
+    pub max_bend: f32,
+    pub color: [u8; 4],
+}
+
+impl Default for Arrow {
+    fn default() -> Self {
+        Self {
+            width: 1.8,
+            head: 9.0,
+            tip: 8.0,
+            min_length: 26.0,
+            max_bend: 22.0,
+            color: [255, 59, 48, 220],
+        }
+    }
+}
+
+impl Effect for Arrow {
+    fn name(&self) -> &'static str {
+        "arrow"
+    }
+
+    fn margin(&self) -> f32 {
+        self.max_bend
+    }
+
+    fn draw(&self, canvas: &mut Canvas<'_>, target: RectF, ctx: &Ctx<'_>) {
+        let Some(card) = ctx.card else { return };
+        let card = card.rect;
+        if card.w <= 0.0 || card.h <= 0.0 || overlaps(card, target) {
+            return;
+        }
+
+        let target_center = (target.x + target.w / 2.0, target.y + target.h / 2.0);
+        let card_center = (card.x + card.w / 2.0, card.y + card.h / 2.0);
+
+        let start = edge_point(card, target_center);
+        // 停在光环外沿，箭头不要戳到目标内容上
+        let end = edge_point(target.inflate(self.tip), card_center);
+
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length < self.min_length {
+            return;
+        }
+
+        // 控制点在中点垂直方向偏一点，看起来像手画的连线而不是尺子比出来的
+        let (nx, ny) = (-dy / length, dx / length);
+        let bend = (length * 0.10).min(self.max_bend);
+        let control = (
+            (start.0 + end.0) / 2.0 + nx * bend,
+            (start.1 + end.1) / 2.0 + ny * bend,
+        );
+
+        let mut builder = PathBuilder::new();
+        builder.move_to(start.0, start.1);
+        builder.quad_to(control.0, control.1, end.0, end.1);
+
+        // 箭头的两条倒刺，方向取曲线在末端的切线
+        let tx = end.0 - control.0;
+        let ty = end.1 - control.1;
+        let tl = (tx * tx + ty * ty).sqrt();
+        if tl > 0.01 {
+            let (ux, uy) = (tx / tl, ty / tl);
+            for sign in [-1.0_f32, 1.0] {
+                let angle = 0.45 * sign;
+                let (sin, cos) = angle.sin_cos();
+                let bx = ux * cos - uy * sin;
+                let by = ux * sin + uy * cos;
+                builder.move_to(end.0, end.1);
+                builder.line_to(end.0 - bx * self.head, end.1 - by * self.head);
+            }
+        }
+
+        let Some(path) = builder.finish() else { return };
+        let stroke = Stroke {
+            width: self.width,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        canvas.stroke_path(&path, &stroke, self.color);
+    }
+}
+
+fn overlaps(a: RectF, b: RectF) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+/// 从矩形中心朝 `toward` 发一条射线，求它与矩形边界的交点。
+fn edge_point(rect: RectF, toward: (f32, f32)) -> (f32, f32) {
+    let cx = rect.x + rect.w / 2.0;
+    let cy = rect.y + rect.h / 2.0;
+    let dx = toward.0 - cx;
+    let dy = toward.1 - cy;
+    if dx.abs() < 0.001 && dy.abs() < 0.001 {
+        return (cx, cy);
+    }
+    let tx = if dx.abs() < 0.001 {
+        f32::INFINITY
+    } else {
+        (rect.w / 2.0) / dx.abs()
+    };
+    let ty = if dy.abs() < 0.001 {
+        f32::INFINITY
+    } else {
+        (rect.h / 2.0) / dy.abs()
+    };
+    let t = tx.min(ty);
+    (cx + dx * t, cy + dy * t)
+}
 /// 模拟手绘的圈。沿着目标外围画一个抖动的椭圆，笔画略有起伏。
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
@@ -212,6 +335,17 @@ pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effec
         .iter()
         .filter_map(|name| match name.as_str() {
             "ring" => Some(ring(style)),
+            "arrow" => {
+                let base = Arrow::default();
+                Some(Box::new(Arrow {
+                    width: base.width * style.scale,
+                    head: base.head * style.scale,
+                    tip: base.tip * style.scale,
+                    min_length: base.min_length * style.scale,
+                    max_bend: base.max_bend * style.scale,
+                    color: style.accent,
+                }) as Box<dyn Effect>)
+            }
             "glow" => {
                 let base = Glow::default();
                 Some(Box::new(Glow {
@@ -250,7 +384,7 @@ fn ring(style: &EffectStyle) -> Box<dyn Effect> {
 }
 
 /// 已知效果名，用于错误提示与文档。
-pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush", "glow"];
+pub const KNOWN_EFFECTS: &[&str] = &["ring", "brush", "glow", "arrow"];
 
 #[cfg(test)]
 mod tests {
@@ -286,6 +420,73 @@ mod tests {
         let brush_one = build_effects(&["brush".to_string()], &base);
         let brush_two = build_effects(&["brush".to_string()], &doubled);
         assert!((brush_two[0].margin() - brush_one[0].margin() * 2.0).abs() < 0.01);
+    }
+    #[test]
+    fn arrow_connects_card_and_far_target() {
+        let target = RectF::new(20.0, 20.0, 80.0, 40.0);
+        let ctx = Ctx {
+            card: Some(crate::Card {
+                rect: RectF::new(20.0, 150.0, 200.0, 40.0),
+                radius: 8.0,
+                bg: [20, 20, 24, 230],
+            }),
+            ..Ctx::default()
+        };
+        let effects = build_effects(&["arrow".to_string()], &EffectStyle::default());
+        let buf = render_frame(260, 220, &[target], &effects, &ctx, 1.0).unwrap();
+
+        let mut painted = 0;
+        for y in 65..145 {
+            for x in 20..240 {
+                let idx = ((y * 260 + x) * 4 + 3) as usize;
+                if buf[idx] > 80 {
+                    painted += 1;
+                }
+            }
+        }
+        assert!(painted > 40, "卡片与目标之间应该画出连线，实际 {painted}");
+    }
+
+    #[test]
+    fn arrow_handles_horizontal_layout() {
+        let target = RectF::new(200.0, 100.0, 60.0, 30.0);
+        let ctx = Ctx {
+            card: Some(crate::Card {
+                rect: RectF::new(20.0, 100.0, 80.0, 30.0),
+                radius: 6.0,
+                bg: [0, 0, 0, 0],
+            }),
+            ..Ctx::default()
+        };
+        let effects = build_effects(&["arrow".to_string()], &EffectStyle::default());
+        let buf = render_frame(300, 200, &[target], &effects, &ctx, 1.0).unwrap();
+        let mut painted = 0;
+        for y in 95..140 {
+            for x in 100..200 {
+                let idx = ((y * 300 + x) * 4 + 3) as usize;
+                if buf[idx] > 80 {
+                    painted += 1;
+                }
+            }
+        }
+        assert!(painted > 20, "水平方向也应该画连线，实际 {painted}");
+    }
+    #[test]
+    fn arrow_skips_adjacent_card() {
+        let target = RectF::new(20.0, 20.0, 80.0, 40.0);
+        // 卡片紧贴目标（间距 < min_length），且背景透明，画了就会被看见
+        let ctx = Ctx {
+            card: Some(crate::Card {
+                rect: RectF::new(20.0, 74.0, 200.0, 40.0),
+                radius: 8.0,
+                bg: [0, 0, 0, 0],
+            }),
+            ..Ctx::default()
+        };
+        let effects = build_effects(&["arrow".to_string()], &EffectStyle::default());
+        let buf = render_frame(260, 220, &[target], &effects, &ctx, 1.0).unwrap();
+        let painted = buf.chunks_exact(4).filter(|px| px[3] > 40).count();
+        assert_eq!(painted, 0, "贴在一起时不该画箭头");
     }
     #[test]
     fn ring_paints_outside_the_target() {
