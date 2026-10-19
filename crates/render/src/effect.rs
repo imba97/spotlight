@@ -191,6 +191,8 @@ pub struct EffectStyle {
     pub accent: [u8; 4],
     pub ring_width: f32,
     pub radius: f32,
+    /// 所在显示器的 DPI 缩放；所有尺寸都乘它。
+    pub scale: f32,
 }
 
 impl Default for EffectStyle {
@@ -199,6 +201,7 @@ impl Default for EffectStyle {
             accent: [255, 59, 48, 255],
             ring_width: 3.0,
             radius: 10.0,
+            scale: 1.0,
         }
     }
 }
@@ -209,14 +212,24 @@ pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effec
         .iter()
         .filter_map(|name| match name.as_str() {
             "ring" => Some(ring(style)),
-            "glow" => Some(Box::new(Glow {
-                color: style.accent,
-                ..Glow::default()
-            }) as Box<dyn Effect>),
-            "brush" => Some(Box::new(Brush {
-                color: style.accent,
-                ..Brush::default()
-            }) as Box<dyn Effect>),
+            "glow" => {
+                let base = Glow::default();
+                Some(Box::new(Glow {
+                    spread: base.spread * style.scale,
+                    width: base.width * style.scale,
+                    radius: base.radius * style.scale,
+                    color: style.accent,
+                }) as Box<dyn Effect>)
+            }
+            "brush" => {
+                let base = Brush::default();
+                Some(Box::new(Brush {
+                    width: base.width * style.scale,
+                    jitter: base.jitter * style.scale,
+                    margin: base.margin * style.scale,
+                    color: style.accent,
+                }) as Box<dyn Effect>)
+            }
             _ => None,
         })
         .collect();
@@ -230,8 +243,8 @@ pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effec
 
 fn ring(style: &EffectStyle) -> Box<dyn Effect> {
     Box::new(Ring {
-        stroke: style.ring_width,
-        radius: style.radius,
+        stroke: style.ring_width * style.scale,
+        radius: style.radius * style.scale,
         color: style.accent,
     })
 }
@@ -262,6 +275,18 @@ mod tests {
         assert_eq!(effects[0].name(), "brush");
     }
 
+    #[test]
+    fn style_scale_multiplies_effect_metrics() {
+        let base = EffectStyle::default();
+        let doubled = EffectStyle { scale: 2.0, ..base };
+        let ring_one = build_effects(&["ring".to_string()], &base);
+        let ring_two = build_effects(&["ring".to_string()], &doubled);
+        assert!((ring_two[0].margin() - ring_one[0].margin() * 2.0).abs() < 0.01);
+
+        let brush_one = build_effects(&["brush".to_string()], &base);
+        let brush_two = build_effects(&["brush".to_string()], &doubled);
+        assert!((brush_two[0].margin() - brush_one[0].margin() * 2.0).abs() < 0.01);
+    }
     #[test]
     fn ring_paints_outside_the_target() {
         let target = RectF::new(20.0, 20.0, 60.0, 30.0);

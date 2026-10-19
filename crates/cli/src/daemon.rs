@@ -70,6 +70,7 @@ struct Job {
 /// 画面上各元素相对效果窗口的位置（客户区坐标）。
 struct Geom {
     union: Rect,
+    card_radius: f32,
     targets: Vec<Rect>,
     card: Option<Rect>,
     close: Option<Rect>,
@@ -380,10 +381,16 @@ impl State {
             .map_err(|e| ErrorBody::new(codes::BAD_PARAMS, e.to_string()))?;
 
         // 先算几何，再建窗口——任何一步失败都不会留下半截画面。
+        // 所有尺寸都以「96 DPI 下的像素」为基准，再按目标所在显示器的缩放比放大。
+        let scale = host.scale.clamp(0.5, 3.0);
+        let px = |value: i32| ((value as f32) * scale).round() as i32;
+        let dip = |value: f32| value * scale;
+
         let style = EffectStyle {
             accent: self.cfg.accent,
             ring_width: self.cfg.ring_width,
             radius: self.cfg.radius,
+            scale,
         };
         let effect_names = if p.effects.is_empty() {
             self.cfg.default_effects.clone()
@@ -398,25 +405,35 @@ impl State {
             .ceil() as i32
             + 2;
 
+        let font_px = px(self.cfg.font_px).max(8);
+        let title_px = px(self.cfg.font_px - 2).max(8);
+        let text_width = px(self.cfg.max_text_width as i32).max(80) as u32;
+        let pad = px(CARD_PADDING).max(4);
+        let close_mark_size = px(CLOSE_MARK).max(8);
+        let close_margin = px(CLOSE_MARGIN).max(4);
+        let close_hit_size = px(CLOSE_HIT).max(16);
+
         // 每个带步骤的目标做一个小药丸，多目标时能看出先后。
         let mut badge_data: Vec<(Rect, TextBitmap)> = Vec::new();
         if scene.targets.len() > 1 {
             for target in &scene.targets {
                 let Some(step) = &target.step else { continue };
-                let Some(bitmap) = render_text(step, 64, (self.cfg.font_px - 3).max(8)) else {
+                let Some(bitmap) =
+                    render_text(step, px(64).max(24) as u32, px(self.cfg.font_px - 3).max(8))
+                else {
                     continue;
                 };
-                let pill_w = bitmap.width as i32 + 12;
-                let pill_h = bitmap.height as i32 + 6;
+                let pill_w = bitmap.width as i32 + px(12);
+                let pill_h = bitmap.height as i32 + px(6);
                 let target_rect = target.rect.rect();
                 let area = monitor_for_rect(&monitors, target_rect)
                     .and_then(|index| monitors.get(index))
                     .map(|m| m.bounds)
                     .unwrap_or(host.bounds);
-                let x = (target_rect.x - 6).clamp(area.x, (area.right() - pill_w).max(area.x));
-                let mut y = target_rect.y - pill_h - 6;
+                let x = (target_rect.x - px(6)).clamp(area.x, (area.right() - pill_w).max(area.x));
+                let mut y = target_rect.y - pill_h - px(6);
                 if y < area.y {
-                    y = target_rect.y + 6;
+                    y = target_rect.y + px(6);
                 }
                 let y = y.clamp(area.y, (area.bottom() - pill_h).max(area.y));
                 badge_data.push((Rect::new(x, y, pill_w, pill_h), bitmap));
@@ -427,24 +444,18 @@ impl State {
             .callout
             .as_ref()
             .and_then(|c| c.title.as_ref())
-            .and_then(|title| {
-                render_text(
-                    title,
-                    self.cfg.max_text_width,
-                    (self.cfg.font_px - 2).max(8),
-                )
-            });
+            .and_then(|title| render_text(title, text_width, title_px));
         let text_bitmap = scene
             .callout
             .as_ref()
             .filter(|c| !c.text.trim().is_empty())
-            .and_then(|c| render_text(&c.text, self.cfg.max_text_width, self.cfg.font_px));
+            .and_then(|c| render_text(&c.text, text_width, font_px));
 
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
         let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
         let title_block = title_bitmap
             .as_ref()
-            .map(|tb| tb.height as i32 + TITLE_GAP)
+            .map(|tb| tb.height as i32 + px(TITLE_GAP))
             .unwrap_or(0);
         let content_w = title_bitmap
             .as_ref()
@@ -459,11 +470,11 @@ impl State {
             place(
                 target_union,
                 Size::new(
-                    content_w + CARD_PADDING + CARD_PADDING_RIGHT,
-                    content_h + CARD_PADDING * 2,
+                    content_w + pad + px(CARD_PADDING_RIGHT),
+                    content_h + pad * 2,
                 ),
                 work,
-                CARD_GAP,
+                px(CARD_GAP),
             )
             .rect
         });
@@ -482,23 +493,24 @@ impl State {
 
         let close_mark = card_rect.map(|card| {
             Rect::new(
-                card.right() - CLOSE_MARGIN - CLOSE_MARK,
-                card.y + CLOSE_MARGIN,
-                CLOSE_MARK,
-                CLOSE_MARK,
+                card.right() - close_margin - close_mark_size,
+                card.y + close_margin,
+                close_mark_size,
+                close_mark_size,
             )
         });
         let close_hit_screen = close_mark.map(|mark| {
             Rect::new(
-                mark.x + mark.w / 2 - CLOSE_HIT / 2,
-                mark.y + mark.h / 2 - CLOSE_HIT / 2,
-                CLOSE_HIT,
-                CLOSE_HIT,
+                mark.x + mark.w / 2 - close_hit_size / 2,
+                mark.y + mark.h / 2 - close_hit_size / 2,
+                close_hit_size,
+                close_hit_size,
             )
         });
 
         let geom = Geom {
             union,
+            card_radius: dip(CARD_RADIUS),
             targets: rects.iter().map(|r| offset(*r)).collect(),
             card: card_rect.map(offset),
             close: close_mark.map(offset),
@@ -509,21 +521,20 @@ impl State {
             title_at: card_rect.and_then(|card| {
                 title_bitmap.as_ref().map(|_| {
                     (
-                        (card.x + CARD_PADDING - union.x) as f32,
-                        (card.y + CARD_PADDING - union.y) as f32,
+                        (card.x + pad - union.x) as f32,
+                        (card.y + pad - union.y) as f32,
                     )
                 })
             }),
             text_at: card_rect.and_then(|card| {
                 text_bitmap.as_ref().map(|_| {
                     (
-                        (card.x + CARD_PADDING - union.x) as f32,
-                        (card.y + CARD_PADDING + title_block - union.y) as f32,
+                        (card.x + pad - union.x) as f32,
+                        (card.y + pad + title_block - union.y) as f32,
                     )
                 })
             }),
         };
-
         let timeout = resolve(scene.timeout, scene.text());
 
         let mut active = Active {
@@ -554,7 +565,7 @@ impl State {
         self.clear_all();
 
         // 洞只比目标大一点点：圆形的圈画应当落在压暗的背景上，而不是落在一块亮矩形里。
-        let hole_pad = PAD;
+        let hole_pad = px(PAD).max(1);
         let holes: Vec<Rect> = rects.iter().map(|r| r.inflate(hole_pad)).collect();
         let dim_alpha = (self.cfg.dim * 255.0).round().clamp(0.0, 255.0) as u8;
         let mut masks = Vec::new();
@@ -675,7 +686,7 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
     let ctx = Ctx {
         card: active.geom.card.map(|c| Card {
             rect: RectF::from_rect(c),
-            radius: CARD_RADIUS,
+            radius: active.geom.card_radius,
             bg: active.theme.card_bg(),
         }),
         badges: &badges,
