@@ -89,7 +89,7 @@ spotlight show --file scene.json
 | `clear` | 立即清除当前画面 |
 | `reload` | 让守护进程重新读取配置，不必等它自己退出 |
 | `status` | 查看守护进程与当前画面 |
-| `doctor` | 自检：屏幕、DPI、配置、守护进程、热键 |
+| `doctor` | 自检：屏幕、DPI、配置、守护进程、热键（`--privacy` 列出截图缓存） |
 | `--json` | 上述命令都支持机器可读输出 |
 
 常用参数：

@@ -328,6 +328,10 @@ fn cmd_doctor(rest: &[String]) -> i32 {
         (None, true) => println!("            （已加载）"),
     }
 
+    if parsed.flag("privacy") {
+        print_privacy();
+    }
+
     if reachable {
         println!("守护进程  : 正常（{ping_ms} ms，v{daemon_version}）");
         if has_scene {
@@ -527,6 +531,52 @@ fn exit_code_for(code: &str) -> i32 {
     }
 }
 
+/// `doctor --privacy`：把截图缓存的家底摊开——用户有权知道自己的屏幕被存了什么。
+fn print_privacy() {
+    let dir = paths::captures_dir();
+    let files = capture_files(&dir);
+    let total: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    println!(
+        "截图缓存  : {}（{} 个文件，共 {} KB）",
+        dir.display(),
+        files.len(),
+        total / 1024
+    );
+    if files.is_empty() {
+        println!("            （空）");
+    }
+    for (name, size, age) in files {
+        println!("  {name}  {} KB  {} 秒前", size / 1024, age.as_secs());
+    }
+    println!("            （守护进程启动时会清空整个目录）");
+}
+
+fn capture_files(dir: &std::path::Path) -> Vec<(String, u64, std::time::Duration)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("png") {
+                return None;
+            }
+            let meta = entry.metadata().ok()?;
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .unwrap_or_default();
+            Some((name, meta.len(), age))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +652,28 @@ mod tests {
         let mut plain = ShowParams::default();
         apply_overrides(&mut plain, &parsed("--json")).unwrap();
         assert!(!plain.dry_run);
+    }
+
+    #[test]
+    fn capture_files_lists_only_png_sorted() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-privacy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c-2.png"), b"xx").unwrap();
+        std::fs::write(dir.join("c-1.png"), b"x").unwrap();
+        std::fs::write(dir.join("note.txt"), b"x").unwrap();
+
+        let files = capture_files(&dir);
+        assert_eq!(files.len(), 2, "只应列出 png");
+        assert_eq!(files[0].0, "c-1.png");
+        assert_eq!(files[1].0, "c-2.png");
+        assert_eq!(files[1].1, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn bad_timeout_is_reported() {

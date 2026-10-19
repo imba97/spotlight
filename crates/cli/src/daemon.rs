@@ -31,8 +31,8 @@ use spotlight_platform::win::{
     MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
 };
 use spotlight_render::{
-    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, Keycap, Progress, TextLayer, build_effects,
-    render_frame,
+    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
+    build_effects, render_frame,
 };
 
 use crate::config::{self, Config, Theme};
@@ -445,6 +445,23 @@ impl State {
             radius: self.cfg.radius,
             scale,
         };
+        // 显式传了 --effect 就严格校验；配置里的默认组合保持宽松（前向兼容）。
+        if !p.effects.is_empty() {
+            let unknown: Vec<&str> = p
+                .effects
+                .iter()
+                .filter(|name| !KNOWN_EFFECTS.contains(&name.as_str()))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(ErrorBody::new(
+                    codes::BAD_PARAMS,
+                    format!("未知效果: {}", unknown.join(", ")),
+                )
+                .with_hint(format!("可用效果: {}", KNOWN_EFFECTS.join(", "))));
+            }
+        }
+
         let effect_names = if p.effects.is_empty() {
             self.cfg.default_effects.clone()
         } else {
@@ -916,8 +933,25 @@ fn handle(state: &mut State, req: Request) -> Response {
             Response::ok(id, serde_json::to_value(result).unwrap_or(json!(null)))
         }
         Method::Clear => {
-            if let Err(err) = req.parse_params::<ClearParams>() {
-                return Response::err(id, err);
+            let params: ClearParams = match req.parse_params() {
+                Ok(params) => params,
+                Err(err) => return Response::err(id, err),
+            };
+            if let Some(key) = params.key {
+                let matches = state
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.key.as_deref())
+                    == Some(key.as_str());
+                if !matches {
+                    return Response::err(
+                        id,
+                        ErrorBody::new(codes::NO_SUCH_KEY, format!("没有 key 为 {key} 的画面"))
+                            .with_hint(
+                                "用 spotlight status 看当前画面的 key；不带 --key 可以清掉任何画面",
+                            ),
+                    );
+                }
             }
             state.clear_all();
             Response::ok(id, json!({"cleared": true}))
