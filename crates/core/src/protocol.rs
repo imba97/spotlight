@@ -211,6 +211,9 @@ pub struct ShowResult {
     /// 实际生效的效果链。
     #[serde(default)]
     pub effects: Vec<String>,
+    /// 非致命问题，例如文案被截断。调用方应当转告用户。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

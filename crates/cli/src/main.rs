@@ -445,6 +445,14 @@ fn human_ok(resp: &Response) {
         return;
     }
 
+    if let Some(warnings) = result.get("warnings").and_then(|v| v.as_array()) {
+        for warning in warnings {
+            if let Some(text) = warning.as_str() {
+                eprintln!("注意: {text}");
+            }
+        }
+    }
+
     if result
         .get("dry_run")
         .and_then(|v| v.as_bool())

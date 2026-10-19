@@ -21,6 +21,8 @@ pub struct TextBitmap {
     pub height: u32,
     /// 每像素 8 位覆盖率，行优先。
     pub alpha: Vec<u8>,
+    /// 文字超过高度上限、被裁掉了一部分。调用方应当告诉用户，而不是默默截断。
+    pub clipped: bool,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -147,10 +149,12 @@ pub fn render_text(text: &str, max_width: u32, font_px: i32) -> Option<TextBitma
         DeleteDC(mem);
         ReleaseDC(std::ptr::null_mut(), screen);
 
+        let clipped = measured.bottom >= MAX_HEIGHT;
         Some(TextBitmap {
             width: width as u32,
             height: height as u32,
             alpha,
+            clipped,
         })
     }
 }

@@ -675,6 +675,18 @@ impl State {
             _ => false,
         };
 
+        // 文字被裁掉要告诉调用方，别让它以为用户看到了完整内容。
+        let mut warnings = Vec::new();
+        if title_bitmap.as_ref().is_some_and(|tb| tb.clipped) {
+            warnings.push("标题过长，已截断".to_string());
+        }
+        if text_bitmap.as_ref().is_some_and(|tb| tb.clipped) {
+            warnings.push("正文过长，已截断；建议拆成多步".to_string());
+        }
+        if shortcut_bitmap.as_ref().is_some_and(|tb| tb.clipped) {
+            warnings.push("快捷键提示过长，已截断".to_string());
+        }
+
         let timeout = resolve(scene.timeout, scene.text());
 
         // 只校验：把换算后的屏幕矩形和预计时长报回去，不建任何窗口。
@@ -685,6 +697,7 @@ impl State {
                 dry_run: true,
                 targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
                 effects: effect_names.clone(),
+                warnings,
             });
         }
 
@@ -770,6 +783,7 @@ impl State {
             dry_run: false,
             targets: rects.iter().map(|r| [r.x, r.y, r.w, r.h]).collect(),
             effects: effect_names,
+            warnings,
         })
     }
 
