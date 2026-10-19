@@ -14,6 +14,7 @@ use serde_json::json;
 use spotlight_core::protocol::{
     CaptureParams, ClearParams, Method, Request, Response, ShowParams, TargetSpec, codes,
 };
+use spotlight_platform::win::monitors;
 use spotlight_platform::win::{enable_dpi_awareness, primary_scale, screen_size};
 
 fn main() {
@@ -190,6 +191,7 @@ fn cmd_doctor(rest: &[String]) -> i32 {
 
     let (screen_w, screen_h) = screen_size();
     let scale = primary_scale();
+    let display_list = monitors::enumerate_or_primary();
     let home = paths::data_home();
     let loaded = config::load(&paths::config_path());
 
@@ -218,6 +220,16 @@ fn cmd_doctor(rest: &[String]) -> i32 {
                 "ok": reachable,
                 "version": spotlight_core::VERSION,
                 "screen": { "width": screen_w, "height": screen_h, "scale": scale },
+                "monitors": display_list
+                    .iter()
+                    .map(|m| json!({
+                        "index": m.id.0,
+                        "name": m.name,
+                        "primary": m.primary,
+                        "bounds": [m.bounds.x, m.bounds.y, m.bounds.w, m.bounds.h],
+                        "scale": m.scale,
+                    }))
+                    .collect::<Vec<_>>(),
                 "home": home.display().to_string(),
                 "config": {
                     "path": loaded.path.display().to_string(),
@@ -237,6 +249,19 @@ fn cmd_doctor(rest: &[String]) -> i32 {
 
     println!("spotlight {}", spotlight_core::VERSION);
     println!("屏幕      : {screen_w}×{screen_h} @ {:.0}%", scale * 100.0);
+    println!("显示器    : {} 块", display_list.len());
+    for monitor in &display_list {
+        println!(
+            "  {}: ({},{}) {}×{} @{:.0}%{}",
+            monitor.name,
+            monitor.bounds.x,
+            monitor.bounds.y,
+            monitor.bounds.w,
+            monitor.bounds.h,
+            monitor.scale * 100.0,
+            if monitor.primary { "  主屏" } else { "" }
+        );
+    }
     println!("数据目录  : {}", home.display());
     println!("配置      : {}", loaded.path.display());
     match (&loaded.note, loaded.exists) {

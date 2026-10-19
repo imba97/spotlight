@@ -11,7 +11,7 @@ use spotlight_core::geom::{ImageRect, Rect, RectF, ScreenRect};
 use spotlight_core::layout::{Size, place};
 use spotlight_core::mapping::{CaptureId, CaptureMap, Segment};
 use spotlight_core::mask::subtract;
-use spotlight_core::monitor::MonitorId;
+use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
     CaptureImage, CaptureInfo, CaptureParams, ClearParams, ErrorBody, Method, MonitorInfo,
     RectInfo, Request, Response, SceneSummary, SegmentInfo, ShowParams, ShowResult, StatusResult,
@@ -22,12 +22,12 @@ use spotlight_core::timing::{Timeout, resolve};
 use spotlight_platform::win::effect::EffectWindow;
 use spotlight_platform::win::ipc::{self, Connection, Server};
 use spotlight_platform::win::message::{self, Event, MessageBus};
+use spotlight_platform::win::monitors;
 use spotlight_platform::win::process::SingleInstance;
 use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
-    MaskWindow, cursor_pos, enable_dpi_awareness, primary_scale, screen_size, set_close_hit,
-    take_dismiss_request,
+    MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
 };
 use spotlight_render::{
     Badge, Card, CloseMark, Ctx, Effect, EffectStyle, Progress, TextLayer, build_effects,
@@ -226,10 +226,17 @@ impl State {
     }
 
     fn capture(&mut self, params: CaptureParams) -> Result<CaptureInfo, ErrorBody> {
-        let (screen_w, screen_h) = screen_size();
-        let bounds = Rect::new(0, 0, screen_w, screen_h);
+        let monitors = monitors::enumerate_or_primary();
+        let index = match params.monitor {
+            Some(index) => index as usize,
+            None => monitors.iter().position(|m| m.primary).unwrap_or(0),
+        };
+        let monitor = monitors.get(index).ok_or_else(|| {
+            ErrorBody::new(codes::BAD_PARAMS, format!("没有第 {index} 块屏"))
+                .with_hint(format!("当前共有 {} 块屏，序号从 0 开始", monitors.len()))
+        })?;
 
-        let shot = shot::grab(bounds).map_err(|e| {
+        let shot = shot::grab(monitor.bounds).map_err(|e| {
             ErrorBody::new(codes::CAPTURE_FAILED, e).with_hint("确认没有全屏独占应用遮挡")
         })?;
         let max_width = params.max_width.unwrap_or(DEFAULT_CAPTURE_WIDTH);
@@ -246,15 +253,8 @@ impl State {
         let map = CaptureMap {
             id: CaptureId::new(&id),
             image_size: (shot.width as u32, shot.height as u32),
-            monitors: vec![spotlight_core::monitor::Monitor::new(
-                MonitorId(0),
-                "primary",
-                bounds,
-                bounds,
-                1.0,
-                true,
-            )],
-            segments: vec![Segment::new(MonitorId(0), image_rect, bounds)],
+            monitors: monitors.clone(),
+            segments: vec![Segment::new(monitor.id, image_rect, monitor.bounds)],
         };
         self.captures.push_back((id.clone(), map));
         while self.captures.len() > MAX_CAPTURES {
@@ -270,28 +270,30 @@ impl State {
                 width: shot.width as u32,
                 height: shot.height as u32,
             },
-            monitors: vec![MonitorInfo {
-                index: 0,
-                name: "primary".into(),
-                primary: true,
-                bounds: [bounds.x, bounds.y, bounds.w, bounds.h],
-                work: [bounds.x, bounds.y, bounds.w, bounds.h],
-                scale: primary_scale(),
-            }],
+            monitors: monitors
+                .iter()
+                .map(|m| MonitorInfo {
+                    index: m.id.0,
+                    name: m.name.clone(),
+                    primary: m.primary,
+                    bounds: [m.bounds.x, m.bounds.y, m.bounds.w, m.bounds.h],
+                    work: [m.work.x, m.work.y, m.work.w, m.work.h],
+                    scale: m.scale,
+                })
+                .collect(),
             segments: vec![SegmentInfo {
-                monitor: 0,
+                monitor: monitor.id.0,
                 image_rect: [0, 0, shot.width, shot.height],
-                screen_rect: [bounds.x, bounds.y, bounds.w, bounds.h],
+                screen_rect: [
+                    monitor.bounds.x,
+                    monitor.bounds.y,
+                    monitor.bounds.w,
+                    monitor.bounds.h,
+                ],
             }],
-            virtual_screen: RectInfo {
-                x: 0,
-                y: 0,
-                width: screen_w,
-                height: screen_h,
-            },
+            virtual_screen: virtual_screen(&monitors),
         })
     }
-
     fn show(&mut self, p: ShowParams) -> Result<ShowResult, ErrorBody> {
         // 单个 --rect、多个 --rect、以及 targets 数组都合并到这里。
         let mut requested: Vec<([i32; 4], Option<String>)> = Vec::new();
@@ -317,18 +319,30 @@ impl State {
             );
         }
 
-        let (screen_w, screen_h) = screen_size();
-        let bounds = Rect::new(0, 0, screen_w, screen_h);
+        let monitors = monitors::enumerate_or_primary();
         for rect in &rects {
-            if !bounds.contains_rect(*rect) {
+            if !monitors.iter().any(|m| m.bounds.contains_rect(*rect)) {
+                let areas: Vec<String> = monitors
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "({},{}) {}×{}",
+                            m.bounds.x, m.bounds.y, m.bounds.w, m.bounds.h
+                        )
+                    })
+                    .collect();
                 return Err(
-                    ErrorBody::new(codes::RECT_OUT_OF_BOUNDS, "矩形超出屏幕范围").with_hint(
-                        format!("当前屏幕是 {screen_w}×{screen_h}，请重新截图后按图像像素给坐标"),
-                    ),
+                    ErrorBody::new(codes::RECT_OUT_OF_BOUNDS, "矩形超出屏幕范围")
+                        .with_hint(format!("当前显示器范围: {}", areas.join(" / "))),
                 );
             }
         }
-
+        // 卡片放在第一个目标所在那块屏的工作区里。
+        let host = monitor_for_rect(&monitors, rects[0])
+            .and_then(|index| monitors.get(index))
+            .or_else(|| monitors.iter().find(|m| m.primary))
+            .ok_or_else(|| ErrorBody::new(codes::INTERNAL, "找不到显示器"))?;
+        let work = host.work;
         let mut scene = Scene {
             key: p.key.clone(),
             targets: rects
@@ -394,12 +408,16 @@ impl State {
                 let pill_w = bitmap.width as i32 + 12;
                 let pill_h = bitmap.height as i32 + 6;
                 let target_rect = target.rect.rect();
-                let x = (target_rect.x - 6).clamp(0, (screen_w - pill_w).max(0));
+                let area = monitor_for_rect(&monitors, target_rect)
+                    .and_then(|index| monitors.get(index))
+                    .map(|m| m.bounds)
+                    .unwrap_or(host.bounds);
+                let x = (target_rect.x - 6).clamp(area.x, (area.right() - pill_w).max(area.x));
                 let mut y = target_rect.y - pill_h - 6;
-                if y < 0 {
+                if y < area.y {
                     y = target_rect.y + 6;
                 }
-                let y = y.clamp(0, (screen_h - pill_h).max(0));
+                let y = y.clamp(area.y, (area.bottom() - pill_h).max(area.y));
                 badge_data.push((Rect::new(x, y, pill_w, pill_h), bitmap));
             }
         }
@@ -443,7 +461,7 @@ impl State {
                     content_w + CARD_PADDING + CARD_PADDING_RIGHT,
                     content_h + CARD_PADDING * 2,
                 ),
-                bounds,
+                work,
                 CARD_GAP,
             )
             .rect
@@ -537,10 +555,15 @@ impl State {
         let holes: Vec<Rect> = rects.iter().map(|r| r.inflate(hole_pad)).collect();
         let dim_alpha = (self.cfg.dim * 255.0).round().clamp(0.0, 255.0) as u8;
         let mut masks = Vec::new();
-        for r in &subtract(bounds, &holes) {
-            let window =
-                MaskWindow::new(*r, dim_alpha).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?;
-            masks.push(window);
+        for monitor in &monitors {
+            if !rects.iter().any(|r| r.intersect(monitor.bounds).is_some()) {
+                continue;
+            }
+            for r in &subtract(monitor.bounds, &holes) {
+                let window = MaskWindow::new(*r, dim_alpha)
+                    .map_err(|e| ErrorBody::new(codes::INTERNAL, e))?;
+                masks.push(window);
+            }
         }
 
         if !active
@@ -598,6 +621,19 @@ impl State {
                  或者显式加 --space screen 表示坐标已经是屏幕物理像素",
             ),
         )
+    }
+}
+
+fn virtual_screen(monitors: &[spotlight_core::monitor::Monitor]) -> RectInfo {
+    let mut union = Rect::ZERO;
+    for monitor in monitors {
+        union = union.union(monitor.bounds);
+    }
+    RectInfo {
+        x: union.x,
+        y: union.y,
+        width: union.w,
+        height: union.h,
     }
 }
 

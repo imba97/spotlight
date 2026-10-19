@@ -48,10 +48,67 @@ impl Monitor {
     }
 }
 
+/// 找到与矩形**重叠面积最大**的显示器。
+///
+/// 用重叠面积而不是"包含"，是因为目标可能跨屏或压在边界上；这样总能选出一个最相关的，
+/// 而不是直接失败。
+pub fn monitor_for_rect(monitors: &[Monitor], rect: Rect) -> Option<usize> {
+    monitors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, monitor)| {
+            rect.intersect(monitor.bounds)
+                .map(|overlap| (overlap.area(), index))
+        })
+        .max_by_key(|(area, _)| *area)
+        .map(|(_, index)| index)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn picks_monitor_by_largest_overlap() {
+        let monitors = vec![
+            Monitor::new(
+                MonitorId(0),
+                "left",
+                Rect::new(-1920, 0, 1920, 1080),
+                Rect::new(-1920, 0, 1920, 1040),
+                1.0,
+                false,
+            ),
+            Monitor::new(
+                MonitorId(1),
+                "right",
+                Rect::new(0, 0, 1920, 1080),
+                Rect::new(0, 0, 1920, 1040),
+                1.25,
+                true,
+            ),
+        ];
+
+        // 完全在左屏（负坐标）
+        assert_eq!(
+            monitor_for_rect(&monitors, Rect::new(-500, 100, 200, 50)),
+            Some(0)
+        );
+        // 完全在右屏
+        assert_eq!(
+            monitor_for_rect(&monitors, Rect::new(100, 100, 200, 50)),
+            Some(1)
+        );
+        // 跨屏：大部分在右屏
+        assert_eq!(
+            monitor_for_rect(&monitors, Rect::new(-100, 100, 400, 50)),
+            Some(1)
+        );
+        // 完全在屏幕之外
+        assert_eq!(
+            monitor_for_rect(&monitors, Rect::new(5000, 5000, 10, 10)),
+            None
+        );
+    }
     #[test]
     fn dip_conversion_round_trips_on_common_scales() {
         for scale in [1.0_f32, 1.25, 1.5, 2.0] {

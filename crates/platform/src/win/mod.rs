@@ -5,6 +5,7 @@
 pub mod effect;
 pub mod ipc;
 pub mod message;
+pub mod monitors;
 pub mod process;
 pub mod shot;
 pub mod text;
