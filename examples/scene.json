@@ -1,0 +1,12 @@
+{
+  "space": "screen",
+  "targets": [
+    { "rect": [500, 300, 200, 60], "step": "1" },
+    { "rect": [820, 520, 160, 44], "step": "2" }
+  ],
+  "title": "两步完成",
+  "text": "先点这里，再点下面那处",
+  "shortcut": "Ctrl+B",
+  "effects": ["ring", "arrow"],
+  "timeout": 20
+}
