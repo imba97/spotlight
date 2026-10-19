@@ -1,6 +1,2 @@
-# 统一行尾，避免 Windows 上的 CRLF 噪音
-* text=auto
-
-*.rs   text eol=lf
-*.md   text eol=lf
-*.toml text eol=lf
+# 统一行尾为 LF，避免 Windows 上的 CRLF 噪音
+* text=auto eol=lf
