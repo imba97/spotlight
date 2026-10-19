@@ -3,7 +3,6 @@
 //! 所有窗口操作都在主线程；IPC 线程只负责收包和回包。
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -31,21 +30,20 @@ use spotlight_platform::win::{
     take_dismiss_request,
 };
 use spotlight_render::{
-    Card, CloseMark, Ctx, Effect, Progress, TextLayer, build_effects, render_frame,
+    Card, CloseMark, Ctx, Effect, EffectStyle, Progress, TextLayer, build_effects, render_frame,
 };
 
-const DIM_ALPHA: u8 = 140;
+use crate::config::{self, Config};
+use crate::paths;
+
 /// 洞相对目标的 padding。
 const PAD: i32 = 6;
-const ACCENT: [u8; 4] = [255, 59, 48, 255];
 const CARD_BG: [u8; 4] = [27, 27, 31, 240];
 const CARD_RADIUS: f32 = 10.0;
 const CARD_PADDING: i32 = 12;
 /// 右侧多留一点，避免文字顶到关闭叉。
 const CARD_PADDING_RIGHT: i32 = 26;
 const CARD_GAP: i32 = 12;
-const FONT_PX: i32 = 14;
-const MAX_TEXT_WIDTH: u32 = 336;
 
 const CLOSE_MARK: i32 = 12;
 const CLOSE_HIT: i32 = 28;
@@ -58,8 +56,6 @@ const TICK_ANIM_MS: u32 = 16;
 const ANIM_MS: f32 = 120.0;
 const TICK_IDLE_MS: u32 = 5000;
 const IDLE_EXIT: Duration = Duration::from_secs(180);
-/// 悬停最多帮用户暂停这么久，之后照常倒计时，避免遮罩永远关不掉。
-const PAUSE_CAP: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CAPTURES: usize = 20;
 const DEFAULT_CAPTURE_WIDTH: u32 = 1280;
@@ -92,6 +88,7 @@ struct Active {
     geom: Geom,
     text: Option<TextBitmap>,
     effects: Vec<Box<dyn Effect>>,
+    accent: [u8; 4],
     effect: EffectWindow,
     _masks: Vec<MaskWindow>,
 }
@@ -105,10 +102,12 @@ struct State {
     captures: VecDeque<(String, CaptureMap)>,
     next_capture: u64,
     hotkey: bool,
+    cfg: Config,
 }
 
 impl State {
     fn new() -> Self {
+        let loaded = config::load(&paths::config_path());
         Self {
             started: Instant::now(),
             last_activity: Instant::now(),
@@ -118,6 +117,7 @@ impl State {
             captures: VecDeque::new(),
             next_capture: 1,
             hotkey: false,
+            cfg: loaded.config,
         }
     }
 
@@ -143,6 +143,7 @@ impl State {
             return;
         }
 
+        let pause_cap = Duration::from_secs(self.cfg.pause_cap_secs);
         let mut finished = false;
         if let Some(active) = self.active.as_mut() {
             let now = Instant::now();
@@ -159,7 +160,7 @@ impl State {
                     .card_screen
                     .is_some_and(|card| card.contains_point(cx, cy));
                 // 暂停有上限：超过 60 秒就不再暂停，避免遮罩永远不消失。
-                active.paused = hovering && active.paused_total < PAUSE_CAP;
+                active.paused = hovering && active.paused_total < pause_cap;
                 if active.paused {
                     active.paused_total += elapsed;
                 } else {
@@ -232,7 +233,7 @@ impl State {
         let id = format!("c-{}", self.next_capture);
         self.next_capture += 1;
 
-        let path = capture_dir().join(format!("{id}.png"));
+        let path = paths::captures_dir().join(format!("{id}.png"));
         shot::save_png(&path, shot.width as u32, shot.height as u32, &shot.bgra)
             .map_err(|e| ErrorBody::new(codes::CAPTURE_FAILED, e))?;
 
@@ -253,7 +254,7 @@ impl State {
         self.captures.push_back((id.clone(), map));
         while self.captures.len() > MAX_CAPTURES {
             if let Some((old, _)) = self.captures.pop_front() {
-                let _ = std::fs::remove_file(capture_dir().join(format!("{old}.png")));
+                let _ = std::fs::remove_file(paths::captures_dir().join(format!("{old}.png")));
             }
         }
 
@@ -352,7 +353,17 @@ impl State {
             .map_err(|e| ErrorBody::new(codes::BAD_PARAMS, e.to_string()))?;
 
         // 先算几何，再建窗口——任何一步失败都不会留下半截画面。
-        let effects = build_effects(&p.effects);
+        let style = EffectStyle {
+            accent: self.cfg.accent,
+            ring_width: self.cfg.ring_width,
+            radius: self.cfg.radius,
+        };
+        let effect_names = if p.effects.is_empty() {
+            self.cfg.default_effects.clone()
+        } else {
+            p.effects.clone()
+        };
+        let effects = build_effects(&effect_names, &style);
         let margin = effects
             .iter()
             .map(|e| e.margin())
@@ -363,7 +374,7 @@ impl State {
         let text_bitmap = scene
             .callout
             .as_ref()
-            .and_then(|c| render_text(&c.text, MAX_TEXT_WIDTH, FONT_PX));
+            .and_then(|c| render_text(&c.text, self.cfg.max_text_width, self.cfg.font_px));
 
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
         let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
@@ -434,6 +445,7 @@ impl State {
             geom,
             text: text_bitmap,
             effects,
+            accent: self.cfg.accent,
             effect: EffectWindow::new(union).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?,
             _masks: Vec::new(),
         };
@@ -447,10 +459,11 @@ impl State {
         // 洞只比目标大一点点：圆形的圈画应当落在压暗的背景上，而不是落在一块亮矩形里。
         let hole_pad = PAD;
         let holes: Vec<Rect> = rects.iter().map(|r| r.inflate(hole_pad)).collect();
+        let dim_alpha = (self.cfg.dim * 255.0).round().clamp(0.0, 255.0) as u8;
         let mut masks = Vec::new();
         for r in &subtract(bounds, &holes) {
             let window =
-                MaskWindow::new(*r, DIM_ALPHA).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?;
+                MaskWindow::new(*r, dim_alpha).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?;
             masks.push(window);
         }
 
@@ -512,23 +525,11 @@ impl State {
     }
 }
 
-/// 数据根目录：默认 `%LOCALAPPDATA%\spotlight`，可用 `SPOTLIGHT_HOME` 覆盖（便携模式）。
-fn capture_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("SPOTLIGHT_HOME") {
-        return PathBuf::from(home).join("captures");
-    }
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("spotlight")
-        .join("captures")
-}
-
 fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
     let progress = match active.total {
         Some(total) if total.as_secs_f32() > 0.0 => Some(Progress {
             value: (active.remaining.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0),
-            color: ACCENT,
+            color: active.accent,
         }),
         _ => None,
     };

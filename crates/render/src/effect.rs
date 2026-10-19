@@ -141,26 +141,51 @@ fn hand_drawn_ellipse(target: RectF, margin: f32, jitter: f32) -> Option<tiny_sk
     builder.finish()
 }
 
-/// 从名字构建效果链。未知名字忽略（前向兼容）；全部未知时退回默认光环。
-pub fn build_effects(names: &[String]) -> Vec<Box<dyn Effect>> {
-    if names.is_empty() {
-        return vec![Box::new(Ring::default())];
-    }
+/// 效果的外观参数，来自配置或默认值。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectStyle {
+    pub accent: [u8; 4],
+    pub ring_width: f32,
+    pub radius: f32,
+}
 
+impl Default for EffectStyle {
+    fn default() -> Self {
+        Self {
+            accent: [255, 59, 48, 255],
+            ring_width: 3.0,
+            radius: 10.0,
+        }
+    }
+}
+
+/// 从名字构建效果链。未知名字忽略（前向兼容）；全部未知时退回默认光环。
+pub fn build_effects(names: &[String], style: &EffectStyle) -> Vec<Box<dyn Effect>> {
     let effects: Vec<Box<dyn Effect>> = names
         .iter()
         .filter_map(|name| match name.as_str() {
-            "ring" => Some(Box::new(Ring::default()) as Box<dyn Effect>),
-            "brush" => Some(Box::new(Brush::default()) as Box<dyn Effect>),
+            "ring" => Some(ring(style)),
+            "brush" => Some(Box::new(Brush {
+                color: style.accent,
+                ..Brush::default()
+            }) as Box<dyn Effect>),
             _ => None,
         })
         .collect();
 
     if effects.is_empty() {
-        vec![Box::new(Ring::default())]
+        vec![ring(style)]
     } else {
         effects
     }
+}
+
+fn ring(style: &EffectStyle) -> Box<dyn Effect> {
+    Box::new(Ring {
+        stroke: style.ring_width,
+        radius: style.radius,
+        color: style.accent,
+    })
 }
 
 /// 已知效果名，用于错误提示与文档。
@@ -177,14 +202,14 @@ mod tests {
 
     #[test]
     fn unknown_names_fall_back_to_ring() {
-        let effects = build_effects(&["nope".to_string()]);
+        let effects = build_effects(&["nope".to_string()], &EffectStyle::default());
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].name(), "ring");
     }
 
     #[test]
     fn explicit_names_replace_default() {
-        let effects = build_effects(&["brush".to_string()]);
+        let effects = build_effects(&["brush".to_string()], &EffectStyle::default());
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].name(), "brush");
     }
@@ -192,7 +217,7 @@ mod tests {
     #[test]
     fn ring_paints_outside_the_target() {
         let target = RectF::new(20.0, 20.0, 60.0, 30.0);
-        let effects = build_effects(&[]);
+        let effects = build_effects(&[], &EffectStyle::default());
         let ctx = Ctx::default();
         let buf = render_frame(100, 80, &[target], &effects, &ctx, 1.0).unwrap();
         // 目标内部应当是空的
@@ -204,7 +229,7 @@ mod tests {
     #[test]
     fn brush_draws_a_closed_loop_around_target() {
         let target = RectF::new(40.0, 40.0, 60.0, 40.0);
-        let effects = build_effects(&["brush".to_string()]);
+        let effects = build_effects(&["brush".to_string()], &EffectStyle::default());
         let ctx = Ctx::default();
         let buf = render_frame(160, 140, &[target], &effects, &ctx, 1.0).unwrap();
 

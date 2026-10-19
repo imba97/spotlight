@@ -5,7 +5,7 @@
 
 mod effect;
 
-pub use effect::{Brush, Effect, KNOWN_EFFECTS, Ring, build_effects};
+pub use effect::{Brush, Effect, EffectStyle, KNOWN_EFFECTS, Ring, build_effects};
 
 use spotlight_core::geom::RectF;
 use tiny_skia::{LineCap, Paint, Path, PathBuilder, Pixmap, Rect as SkRect, Stroke, Transform};

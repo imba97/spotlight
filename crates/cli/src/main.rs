@@ -2,7 +2,9 @@
 
 mod args;
 mod client;
+mod config;
 mod daemon;
+mod paths;
 mod probe;
 
 use std::process::exit;
@@ -188,7 +190,8 @@ fn cmd_doctor(rest: &[String]) -> i32 {
 
     let (screen_w, screen_h) = screen_size();
     let scale = primary_scale();
-    let home = data_home();
+    let home = paths::data_home();
+    let loaded = config::load(&paths::config_path());
 
     let started = Instant::now();
     let response = client::send(&Request::new(1, Method::Status, None));
@@ -216,6 +219,11 @@ fn cmd_doctor(rest: &[String]) -> i32 {
                 "version": spotlight_core::VERSION,
                 "screen": { "width": screen_w, "height": screen_h, "scale": scale },
                 "home": home.display().to_string(),
+                "config": {
+                    "path": loaded.path.display().to_string(),
+                    "exists": loaded.exists,
+                    "note": loaded.note,
+                },
                 "daemon": {
                     "reachable": reachable,
                     "version": daemon_version,
@@ -230,6 +238,13 @@ fn cmd_doctor(rest: &[String]) -> i32 {
     println!("spotlight {}", spotlight_core::VERSION);
     println!("屏幕      : {screen_w}×{screen_h} @ {:.0}%", scale * 100.0);
     println!("数据目录  : {}", home.display());
+    println!("配置      : {}", loaded.path.display());
+    match (&loaded.note, loaded.exists) {
+        (Some(note), _) => println!("            ⚠ {note}（该项回退默认值）"),
+        (None, false) => println!("            （未找到，全部使用默认值）"),
+        (None, true) => println!("            （已加载）"),
+    }
+
     if reachable {
         println!("守护进程  : 正常（{ping_ms} ms，v{daemon_version}）");
         if has_scene {
@@ -257,17 +272,6 @@ fn cmd_doctor(rest: &[String]) -> i32 {
     }
     0
 }
-
-fn data_home() -> std::path::PathBuf {
-    if let Some(home) = std::env::var_os("SPOTLIGHT_HOME") {
-        return std::path::PathBuf::from(home);
-    }
-    std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("spotlight")
-}
-
 fn usage_error(message: &str) -> i32 {
     eprintln!("参数错误: {message}");
     2
