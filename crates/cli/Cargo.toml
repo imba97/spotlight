@@ -1,0 +1,15 @@
+[package]
+name = "spotlight-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Spotlight 命令行入口"
+
+[[bin]]
+name = "spotlight"
+path = "src/main.rs"
+
+[dependencies]
+spotlight-core = { workspace = true }
+spotlight-platform = { workspace = true }
