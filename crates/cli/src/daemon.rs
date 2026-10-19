@@ -753,6 +753,19 @@ fn internal(message: impl Into<String>) -> ErrorBody {
         .with_hint("运行 spotlight doctor 排查；必要时结束 spotlight.exe 再重试")
 }
 
+/// 上一次守护进程留下的截图文件已经无法被引用（id 只活在内存里），启动时清掉。
+fn cleanup_captures(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("png") {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 fn virtual_screen(monitors: &[spotlight_core::monitor::Monitor]) -> RectInfo {
     let mut union = Rect::ZERO;
     for monitor in monitors {
@@ -975,6 +988,8 @@ pub fn run() -> i32 {
         Err(_) => return 0, // 已经有一个在跑
     };
 
+    cleanup_captures(&paths::captures_dir());
+
     let bus = MessageBus::<Job>::new();
     let sender = bus.sender();
     let server = Server::new(&ipc::pipe_name());
@@ -1008,4 +1023,34 @@ pub fn run() -> i32 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_removes_only_png_files() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-capture-cleanup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c-1.png"), b"x").unwrap();
+        std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+
+        cleanup_captures(&dir);
+
+        assert!(!dir.join("c-1.png").exists(), "png 应该被清掉");
+        assert!(dir.join("keep.txt").exists(), "不该碰别的文件");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_on_missing_dir_is_a_noop() {
+        cleanup_captures(std::path::Path::new("D:/definitely/not/here"));
+    }
 }
