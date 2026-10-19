@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/platform", "crates/cli"]
+members = ["crates/core", "crates/platform", "crates/render", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT"
 [workspace.dependencies]
 spotlight-core = { path = "crates/core" }
 spotlight-platform = { path = "crates/platform" }
+spotlight-render = { path = "crates/render" }
 
 [profile.release]
 opt-level = "z"

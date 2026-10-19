@@ -2,6 +2,12 @@
 //!
 //! 这一层的职责只有"把窗口摆上去"和"把屏幕读回来"，不含任何布局逻辑。
 
+pub mod effect;
+pub mod ipc;
+pub mod message;
+pub mod process;
+pub mod text;
+
 use std::ffi::c_void;
 use std::sync::Once;
 use std::time::{Duration, Instant};

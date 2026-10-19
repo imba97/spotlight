@@ -7,3 +7,5 @@ license.workspace = true
 description = "Spotlight 的纯逻辑层：几何、坐标映射、遮罩分解、布局、计时"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

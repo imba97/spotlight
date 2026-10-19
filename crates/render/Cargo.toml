@@ -1,0 +1,11 @@
+[package]
+name = "spotlight-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Spotlight 的光栅化层：DrawOp 指令 → 预乘 BGRA 位图"
+
+[dependencies]
+spotlight-core = { workspace = true }
+tiny-skia = "0.11"

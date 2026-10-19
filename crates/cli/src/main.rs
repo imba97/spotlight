@@ -1,20 +1,228 @@
 //! Spotlight 命令行入口。
 
+mod args;
+mod client;
+mod daemon;
 mod probe;
 
-fn main() {
-    let cmd = std::env::args().nth(1);
+use std::process::exit;
 
-    match cmd.as_deref() {
-        Some("probe") => std::process::exit(probe::run()),
-        Some(other) => {
-            eprintln!("未知命令: {other}");
-            eprintln!("用法: spotlight probe");
-            std::process::exit(2);
+use serde_json::json;
+use spotlight_core::protocol::{ClearParams, Method, Request, Response, ShowParams, codes};
+
+fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let Some(command) = argv.first() else {
+        usage();
+        exit(2);
+    };
+
+    let code = match command.as_str() {
+        "daemon" => daemon::run(),
+        "probe" => probe::run(),
+        "show" => cmd_show(&argv[1..]),
+        "clear" => cmd_clear(&argv[1..]),
+        "status" => cmd_status(&argv[1..]),
+        "help" | "-h" | "--help" => {
+            usage();
+            0
         }
-        None => {
-            eprintln!("用法: spotlight probe");
-            std::process::exit(2);
+        "version" | "-V" | "--version" => {
+            println!("spotlight {}", spotlight_core::VERSION);
+            0
         }
+        other => {
+            eprintln!("未知命令: {other}\n");
+            usage();
+            2
+        }
+    };
+    exit(code);
+}
+
+fn usage() {
+    println!(
+        "spotlight <命令> [参数]
+
+命令:
+  show     高亮一个区域
+  clear    清除当前画面
+  status   查看守护进程与当前画面
+  daemon   前台运行守护进程（内部用）
+  probe    技术验证探针
+
+show 参数:
+  --rect x,y,w,h       目标矩形，屏幕物理像素（必填）
+  --text <文案>        显示在卡片里
+  --title <标题>       卡片标题
+  --step <如 1/3>      步骤标记
+  --timeout <秒|auto>  0 表示常驻；缺省按字数估算
+  --key <id>           相同 key 原地替换
+  --json               机器可读输出"
+    );
+}
+
+fn cmd_show(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+
+    let Some(rect_raw) = parsed.value("rect") else {
+        return usage_error("show 需要 --rect x,y,w,h");
+    };
+    let rect = match args::parse_rect(rect_raw) {
+        Ok(r) => r,
+        Err(err) => return usage_error(&err),
+    };
+    let timeout = match parsed.value("timeout") {
+        None | Some("auto") => None,
+        Some(raw) => match raw.parse::<f32>() {
+            Ok(secs) => Some(secs),
+            Err(_) => return usage_error("--timeout 需要秒数或 auto"),
+        },
+    };
+
+    let params = ShowParams {
+        rect,
+        text: parsed.value("text").map(str::to_string),
+        title: parsed.value("title").map(str::to_string),
+        step: parsed.value("step").map(str::to_string),
+        timeout,
+        key: parsed
+            .value("key")
+            .or(parsed.value("id"))
+            .map(str::to_string),
+    };
+
+    let req = Request::new(1, Method::Show, Some(json!(params)));
+    dispatch(req, parsed.flag("json"))
+}
+
+fn cmd_clear(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+    let params = ClearParams {
+        all: !parsed.flag("key"),
+        key: parsed.value("key").map(str::to_string),
+    };
+    let req = Request::new(1, Method::Clear, Some(json!(params)));
+    dispatch(req, parsed.flag("json"))
+}
+
+fn cmd_status(rest: &[String]) -> i32 {
+    let parsed = match args::parse(rest) {
+        Ok(p) => p,
+        Err(err) => return usage_error(&err),
+    };
+    let req = Request::new(1, Method::Status, None);
+    dispatch(req, parsed.flag("json"))
+}
+
+fn usage_error(message: &str) -> i32 {
+    eprintln!("参数错误: {message}");
+    2
+}
+
+fn dispatch(req: Request, json_out: bool) -> i32 {
+    match client::send(&req) {
+        Ok(resp) => report(resp, json_out),
+        Err(err) => {
+            if json_out {
+                println!(
+                    "{}",
+                    json!({"ok": false, "error": {"code": "daemon_unavailable", "message": err}})
+                );
+            } else {
+                eprintln!("无法连接守护进程: {err}");
+            }
+            4
+        }
+    }
+}
+
+fn report(resp: Response, json_out: bool) -> i32 {
+    if json_out {
+        println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+    }
+
+    if resp.ok {
+        if !json_out {
+            human_ok(&resp);
+        }
+        return 0;
+    }
+
+    let Some(err) = resp.error else {
+        return 1;
+    };
+    if !json_out {
+        eprintln!("错误 [{}]: {}", err.code, err.message);
+        if let Some(hint) = err.hint {
+            eprintln!("提示: {hint}");
+        }
+    }
+    exit_code_for(&err.code)
+}
+
+fn human_ok(resp: &Response) {
+    let Some(result) = &resp.result else {
+        println!("ok");
+        return;
+    };
+
+    if let Some(ms) = result.get("timeout_ms").and_then(|v| v.as_u64()) {
+        println!("已显示，{:.1} 秒后自动消失", ms as f64 / 1000.0);
+    } else if let Some(scene) = result.get("scene").and_then(|v| v.as_str()) {
+        println!("已显示 {scene}");
+    } else if result.get("cleared").is_some() {
+        println!("已清除");
+    } else if result.get("alive").is_some() {
+        human_status(result);
+    } else {
+        println!("ok");
+    }
+}
+
+fn human_status(result: &serde_json::Value) {
+    let version = result
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let uptime = result
+        .get("uptime_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    println!("守护进程运行中 v{version}，已运行 {} 秒", uptime / 1000);
+
+    match result.get("scene") {
+        Some(scene) if !scene.is_null() => {
+            let has_text = scene
+                .get("has_text")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let remaining = scene
+                .get("remaining_ms")
+                .and_then(|v| v.as_u64())
+                .map(|ms| format!("，剩余 {:.1} 秒", ms as f64 / 1000.0))
+                .unwrap_or_else(|| "，常驻".to_string());
+            println!(
+                "当前画面: {}{remaining}",
+                if has_text { "带文案" } else { "仅高亮" }
+            );
+        }
+        _ => println!("当前没有画面"),
+    }
+}
+
+fn exit_code_for(code: &str) -> i32 {
+    match code {
+        codes::BAD_PARAMS | codes::BAD_JSON => 2,
+        codes::RECT_OUT_OF_BOUNDS => 3,
+        codes::UNSUPPORTED_VERSION | codes::TIMEOUT => 4,
+        codes::NO_SUCH_KEY => 5,
+        _ => 1,
     }
 }
