@@ -71,6 +71,7 @@ capture 参数:
   --json               机器可读输出
 
 show 参数:
+  --file <路径>        场景 JSON（targets/text/effects/timeout…）
   --rect x,y,w,h       目标矩形（可重复给多个目标）
   --effect <名字>      效果：ring（默认）/ brush，可重复
   --capture <id>       坐标来自哪张截图（推荐）
@@ -90,51 +91,78 @@ fn cmd_show(rest: &[String]) -> i32 {
         Err(err) => return usage_error(&err),
     };
 
-    if parsed.all("rect").is_empty() {
-        return usage_error("show 需要 --rect x,y,w,h（可重复）");
-    }
-
-    // --step 可以给多次，按顺序对应 --rect。
-    let steps = parsed.all("step");
-    let mut targets = Vec::new();
-    for (index, raw) in parsed.all("rect").iter().enumerate() {
-        match args::parse_rect(raw) {
-            Ok(rect) => targets.push(TargetSpec {
-                rect,
-                step: steps.get(index).cloned(),
-            }),
+    let mut params = match parsed.value("file") {
+        Some(path) => match load_scene(path) {
+            Ok(params) => params,
             Err(err) => return usage_error(&err),
-        }
-    }
-
-    let timeout = match parsed.value("timeout") {
-        None | Some("auto") => None,
-        Some(raw) => match raw.parse::<f32>() {
-            Ok(secs) => Some(secs),
-            Err(_) => return usage_error("--timeout 需要秒数或 auto"),
         },
+        None => ShowParams::default(),
     };
 
-    let params = ShowParams {
-        rect: None,
-        targets,
-        capture: parsed.value("capture").map(str::to_string),
-        space: parsed.value("space").map(str::to_string),
-        text: parsed.value("text").map(str::to_string),
-        title: parsed.value("title").map(str::to_string),
-        step: None,
-        effects: parsed.all("effect").to_vec(),
-        timeout,
-        key: parsed
-            .value("key")
-            .or(parsed.value("id"))
-            .map(str::to_string),
-    };
+    if let Err(err) = apply_overrides(&mut params, &parsed) {
+        return usage_error(&err);
+    }
+    if params.rect.is_none() && params.targets.is_empty() {
+        return usage_error("show 需要 --rect x,y,w,h 或 --file <scene.json>");
+    }
 
     let req = Request::new(1, Method::Show, Some(json!(params)));
     dispatch(req, parsed.flag("json"))
 }
 
+fn load_scene(path: &str) -> Result<ShowParams, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("读取场景文件失败: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("场景文件解析失败: {e}"))
+}
+
+/// 命令行上显式给出的字段覆盖场景文件里的同名项。
+fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(), String> {
+    let rects = parsed.all("rect");
+    if !rects.is_empty() {
+        let steps = parsed.all("step");
+        let mut targets = Vec::with_capacity(rects.len());
+        for (index, raw) in rects.iter().enumerate() {
+            targets.push(TargetSpec {
+                rect: args::parse_rect(raw)?,
+                step: steps.get(index).cloned(),
+            });
+        }
+        params.rect = None;
+        params.targets = targets;
+    }
+
+    if let Some(text) = parsed.value("text") {
+        params.text = Some(text.to_string());
+    }
+    if let Some(title) = parsed.value("title") {
+        params.title = Some(title.to_string());
+    }
+    if let Some(capture) = parsed.value("capture") {
+        params.capture = Some(capture.to_string());
+    }
+    if let Some(space) = parsed.value("space") {
+        params.space = Some(space.to_string());
+    }
+    if let Some(key) = parsed.value("key").or(parsed.value("id")) {
+        params.key = Some(key.to_string());
+    }
+    if let Some(raw) = parsed.value("timeout") {
+        params.timeout = match raw {
+            "auto" => None,
+            other => Some(
+                other
+                    .parse::<f32>()
+                    .map_err(|_| "--timeout 需要秒数或 auto".to_string())?,
+            ),
+        };
+    }
+
+    let effects = parsed.all("effect");
+    if !effects.is_empty() {
+        params.effects = effects.to_vec();
+    }
+    Ok(())
+}
 fn cmd_capture(rest: &[String]) -> i32 {
     let parsed = match args::parse(rest) {
         Ok(p) => p,
@@ -417,5 +445,78 @@ fn exit_code_for(code: &str) -> i32 {
         codes::NO_SUCH_KEY => 5,
         codes::SPACE_UNSPECIFIED | codes::UNKNOWN_CAPTURE | codes::CAPTURE_FAILED => 3,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(text: &str) -> args::Parsed {
+        let tokens: Vec<String> = text.split_whitespace().map(String::from).collect();
+        args::parse(&tokens).unwrap()
+    }
+
+    #[test]
+    fn file_values_survive_without_overrides() {
+        let mut params = ShowParams {
+            text: Some("来自文件".into()),
+            timeout: Some(12.0),
+            ..ShowParams::default()
+        };
+        apply_overrides(&mut params, &parsed("--json")).unwrap();
+        assert_eq!(params.text.as_deref(), Some("来自文件"));
+        assert_eq!(params.timeout, Some(12.0));
+    }
+
+    #[test]
+    fn cli_overrides_file() {
+        let mut params = ShowParams {
+            text: Some("old".into()),
+            effects: vec!["brush".into()],
+            ..ShowParams::default()
+        };
+        apply_overrides(
+            &mut params,
+            &parsed("--text new --effect ring --effect glow"),
+        )
+        .unwrap();
+        assert_eq!(params.text.as_deref(), Some("new"));
+        assert_eq!(params.effects, vec!["ring".to_string(), "glow".to_string()]);
+    }
+
+    #[test]
+    fn rects_replace_file_targets_and_take_steps() {
+        let mut params = ShowParams {
+            targets: vec![TargetSpec {
+                rect: [9, 9, 9, 9],
+                step: None,
+            }],
+            ..ShowParams::default()
+        };
+        apply_overrides(
+            &mut params,
+            &parsed("--rect 1,2,3,4 --rect 5,6,7,8 --step 1 --step 2"),
+        )
+        .unwrap();
+        assert_eq!(params.targets.len(), 2);
+        assert_eq!(params.targets[0].step.as_deref(), Some("1"));
+        assert_eq!(params.targets[1].rect, [5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn timeout_auto_clears_file_value() {
+        let mut params = ShowParams {
+            timeout: Some(30.0),
+            ..ShowParams::default()
+        };
+        apply_overrides(&mut params, &parsed("--timeout auto")).unwrap();
+        assert_eq!(params.timeout, None);
+    }
+
+    #[test]
+    fn bad_timeout_is_reported() {
+        let mut params = ShowParams::default();
+        assert!(apply_overrides(&mut params, &parsed("--timeout soon")).is_err());
     }
 }

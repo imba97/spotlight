@@ -81,6 +81,7 @@ struct Geom {
 struct Active {
     key: Option<String>,
     has_text: bool,
+    targets: usize,
     total: Option<Duration>,
     remaining: Duration,
     last_tick: Instant,
@@ -218,7 +219,7 @@ impl State {
             hotkey: self.hotkey,
             scene: self.active.as_ref().map(|a| SceneSummary {
                 key: a.key.clone(),
-                targets: 1,
+                targets: a.targets,
                 has_text: a.has_text,
                 remaining_ms: a.total.map(|_| a.remaining.as_millis() as u64),
             }),
@@ -528,6 +529,7 @@ impl State {
         let mut active = Active {
             key: scene.key.clone(),
             has_text: scene.callout.is_some(),
+            targets: scene.targets.len(),
             total: timeout,
             remaining: timeout.unwrap_or_default(),
             last_tick: Instant::now(),
@@ -825,7 +827,9 @@ pub fn run() -> i32 {
                 Ok(conn) => conn,
                 Err(_) => break,
             };
-            serve(&mut conn, &sender);
+            // 每个连接一个线程：某个客户端卡住不发数据，不能把整个守护进程堵死。
+            let sender = sender.clone();
+            std::thread::spawn(move || serve(&mut conn, &sender));
         }
     });
 

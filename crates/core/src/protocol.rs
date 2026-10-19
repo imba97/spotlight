@@ -142,7 +142,7 @@ impl ErrorBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ShowParams {
     /// 单个目标的屏幕物理像素 `[x, y, w, h]`。与 `targets` 至少给一个。
     #[serde(default)]
