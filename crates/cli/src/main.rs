@@ -383,8 +383,9 @@ fn report(resp: Response, json_out: bool) -> i32 {
     };
     if !json_out {
         eprintln!("错误 [{}]: {}", err.code, err.message);
-        if let Some(hint) = err.hint {
-            eprintln!("提示: {hint}");
+        match err.hint {
+            Some(hint) => eprintln!("提示: {hint}"),
+            None => eprintln!("提示: 运行 spotlight doctor 排查环境问题"),
         }
     }
     exit_code_for(&err.code)

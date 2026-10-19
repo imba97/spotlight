@@ -271,8 +271,10 @@ impl State {
         self.next_capture += 1;
 
         let path = paths::captures_dir().join(format!("{id}.png"));
-        shot::save_png(&path, shot.width as u32, shot.height as u32, &shot.bgra)
-            .map_err(|e| ErrorBody::new(codes::CAPTURE_FAILED, e))?;
+        shot::save_png(&path, shot.width as u32, shot.height as u32, &shot.bgra).map_err(|e| {
+            ErrorBody::new(codes::CAPTURE_FAILED, e)
+                .with_hint("检查数据目录是否可写，或者换一个 SPOTLIGHT_HOME")
+        })?;
 
         let image_rect = Rect::new(0, 0, shot.width, shot.height);
         let map = CaptureMap {
@@ -371,7 +373,7 @@ impl State {
         let host = monitor_for_rect(&monitors, rects[0])
             .and_then(|index| monitors.get(index))
             .or_else(|| monitors.iter().find(|m| m.primary))
-            .ok_or_else(|| ErrorBody::new(codes::INTERNAL, "找不到显示器"))?;
+            .ok_or_else(|| internal("找不到显示器"))?;
         let work = host.work;
         let mut scene = Scene {
             key: p.key.clone(),
@@ -406,7 +408,7 @@ impl State {
         }
         scene
             .validate()
-            .map_err(|e| ErrorBody::new(codes::BAD_PARAMS, e.to_string()))?;
+            .map_err(|e| ErrorBody::new(codes::BAD_PARAMS, e.to_string()).with_hint(e.hint()))?;
 
         // 先算几何，再建窗口——任何一步失败都不会留下半截画面。
         // 所有尺寸都以「96 DPI 下的像素」为基准，再按目标所在显示器的缩放比放大。
@@ -635,12 +637,12 @@ impl State {
             effects,
             accent: self.cfg.accent,
             theme: self.cfg.theme,
-            effect: EffectWindow::new(union).map_err(|e| ErrorBody::new(codes::INTERNAL, e))?,
+            effect: EffectWindow::new(union).map_err(internal)?,
             _masks: Vec::new(),
         };
 
         let Some(bgra) = render_active(&active, 0.0) else {
-            return Err(ErrorBody::new(codes::INTERNAL, "渲染失败"));
+            return Err(internal("渲染失败"));
         };
 
         self.clear_all();
@@ -655,8 +657,7 @@ impl State {
                 continue;
             }
             for r in &subtract(monitor.bounds, &holes) {
-                let window = MaskWindow::new(*r, dim_alpha)
-                    .map_err(|e| ErrorBody::new(codes::INTERNAL, e))?;
+                let window = MaskWindow::new(*r, dim_alpha).map_err(internal)?;
                 masks.push(window);
             }
         }
@@ -665,7 +666,7 @@ impl State {
             .effect
             .set_pixels(union.x, union.y, union.w, union.h, &bgra)
         {
-            return Err(ErrorBody::new(codes::INTERNAL, "提交位图失败"));
+            return Err(internal("提交位图失败"));
         }
         // 调试构建允许关掉截图排除，方便用探针看到真实画面。
         #[cfg(debug_assertions)]
@@ -720,6 +721,12 @@ impl State {
             ),
         )
     }
+}
+
+/// 内部错误统一带上同一条排查建议。
+fn internal(message: impl Into<String>) -> ErrorBody {
+    ErrorBody::new(codes::INTERNAL, message)
+        .with_hint("运行 spotlight doctor 排查；必要时结束 spotlight.exe 再重试")
 }
 
 fn virtual_screen(monitors: &[spotlight_core::monitor::Monitor]) -> RectInfo {
@@ -902,7 +909,11 @@ fn serve(conn: &mut Connection, sender: &message::Sender<Job>) {
                     Err(err) => {
                         send(
                             conn,
-                            &Response::err(0, ErrorBody::new(codes::BAD_JSON, err.to_string())),
+                            &Response::err(
+                                0,
+                                ErrorBody::new(codes::BAD_JSON, err.to_string())
+                                    .with_hint("请求必须是单行 JSON，字段参考 spotlight --help"),
+                            ),
                         );
                         continue;
                     }
@@ -914,7 +925,11 @@ fn serve(conn: &mut Connection, sender: &message::Sender<Job>) {
                     Ok(resp) => send(conn, &resp),
                     Err(_) => send(
                         conn,
-                        &Response::err(id, ErrorBody::new(codes::TIMEOUT, "守护进程处理超时")),
+                        &Response::err(
+                            id,
+                            ErrorBody::new(codes::TIMEOUT, "守护进程处理超时")
+                                .with_hint("重试一次；如果持续超时，结束 spotlight.exe 后再试"),
+                        ),
                     ),
                 }
             }

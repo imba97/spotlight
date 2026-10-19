@@ -72,6 +72,17 @@ pub enum SceneError {
     EmptyCallout,
 }
 
+impl SceneError {
+    /// 给调用方的下一步建议。错误信息本身只描述问题，hint 负责告诉它怎么办。
+    pub fn hint(&self) -> &'static str {
+        match self {
+            SceneError::NoTargets => "至少给一个 --rect，或者用 --file 传 targets 数组",
+            SceneError::EmptyTarget => "检查截图里量出的矩形，w 和 h 都必须大于 0",
+            SceneError::EmptyCallout => "给 --text 写点内容，或者不要传 --title",
+        }
+    }
+}
+
 impl std::fmt::Display for SceneError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
@@ -117,6 +128,16 @@ mod tests {
         assert_eq!(scene.validate(), Ok(()));
     }
 
+    #[test]
+    fn every_error_carries_a_hint() {
+        for error in [
+            SceneError::NoTargets,
+            SceneError::EmptyTarget,
+            SceneError::EmptyCallout,
+        ] {
+            assert!(!error.hint().is_empty(), "{error:?} 缺少 hint");
+        }
+    }
     #[test]
     fn text_is_empty_without_callout() {
         assert_eq!(Scene::default().text(), "");
