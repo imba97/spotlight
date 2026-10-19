@@ -6,3 +6,5 @@
 *.dll
 .idea/
 .vscode/
+# 本地运行产物（截图缓存），绝不入库
+.spotlight/

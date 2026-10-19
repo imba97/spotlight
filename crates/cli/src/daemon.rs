@@ -15,7 +15,7 @@ use spotlight_core::monitor::monitor_for_rect;
 use spotlight_core::protocol::{
     CaptureImage, CaptureInfo, CaptureParams, CaptureSummary, CapturesResult, ClearParams,
     ErrorBody, Method, MonitorInfo, RectInfo, ReloadResult, Request, Response, SceneSummary,
-    SegmentInfo, ShowDebug, ShowParams, ShowResult, StatusResult, codes,
+    SegmentInfo, ShowDebug, ShowParams, ShowResult, StatusResult, StepSpec, codes,
 };
 use spotlight_core::scene::{Callout, Scene, Target};
 use spotlight_core::timing::{Timeout, resolve};
@@ -28,8 +28,8 @@ use spotlight_platform::win::process::SingleInstance;
 use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
-    MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
-    take_display_change,
+    MaskWindow, cursor_pos, enable_dpi_awareness, mouse_buttons, set_close_hit,
+    take_dismiss_request, take_display_change,
 };
 use spotlight_render::{
     Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
@@ -54,6 +54,8 @@ const CLOSE_HIT: i32 = 28;
 const CLOSE_MARGIN: i32 = 8;
 
 const TICK_ACTIVE_MS: u32 = 100;
+/// 检测点击的轮询间隔；静态画面也按这个节奏醒来。
+const TICK_CLICK_MS: u32 = 30;
 /// 入场动画期间用 60fps 的节奏。
 const TICK_ANIM_MS: u32 = 16;
 /// 入场淡入时长（毫秒）。
@@ -79,6 +81,7 @@ struct Geom {
     badges: Vec<(Rect, TextBitmap)>,
     keycap: Option<Rect>,
     keycap_text: Option<Rect>,
+    hint_at: Option<(f32, f32)>,
     title_at: Option<(f32, f32)>,
     text_at: Option<(f32, f32)>,
 }
@@ -99,6 +102,7 @@ struct Active {
     title: Option<TextBitmap>,
     text: Option<TextBitmap>,
     keycap: Option<TextBitmap>,
+    hint: Option<TextBitmap>,
     effects: Vec<Box<dyn Effect>>,
     accent: [u8; 4],
     theme: Theme,
@@ -118,6 +122,10 @@ struct State {
     timer_ms: u32,
     should_exit: bool,
     captures: VecDeque<CaptureEntry>,
+    /// 多步流程里还没播的步骤。
+    queue: VecDeque<ShowParams>,
+    /// 上一帧的鼠标按键状态，用来识别“刚按下”的边沿。
+    buttons: u8,
     next_capture: u64,
     hotkey: bool,
     cfg: Config,
@@ -129,6 +137,8 @@ impl State {
         Self {
             started: Instant::now(),
             last_activity: Instant::now(),
+            queue: VecDeque::new(),
+            buttons: 0,
             active: None,
             timer_ms: 0,
             should_exit: false,
@@ -145,7 +155,8 @@ impl State {
             Some(active) if active.shown_at.elapsed().as_secs_f32() * 1000.0 < ANIM_MS => {
                 TICK_ANIM_MS
             }
-            Some(_) => TICK_ACTIVE_MS,
+            // 画面在的时候要能用 30ms 的节奏轮询点击，否则静态画面收不到点击。
+            Some(_) => TICK_ACTIVE_MS.min(TICK_CLICK_MS),
             None => TICK_IDLE_MS,
         };
         if self.timer_ms != want {
@@ -163,6 +174,25 @@ impl State {
         if take_dismiss_request() {
             self.clear_all();
             return;
+        }
+
+        // 点中当前步骤的高亮区域 → 前进到下一步。
+        // 用轮询而不是鼠标钩子：钩子要"看见并吞掉"事件，而这里的点击必须照常落到下层应用上。
+        let buttons = mouse_buttons();
+        let clicked = buttons != 0 && self.buttons == 0;
+        self.buttons = buttons;
+        if clicked {
+            let (mx, my) = cursor_pos();
+            let hit = self.active.as_ref().is_some_and(|active| {
+                active.geom.targets.iter().any(|rect| {
+                    rect.translated(active.geom.union.x, active.geom.union.y)
+                        .contains_point(mx, my)
+                })
+            });
+            if hit {
+                self.advance();
+                return;
+            }
         }
 
         let pause_cap = Duration::from_secs(self.cfg.pause_cap_secs);
@@ -358,7 +388,44 @@ impl State {
             virtual_screen: virtual_screen(&monitors),
         })
     }
-    fn show(&mut self, p: ShowParams) -> Result<ShowResult, ErrorBody> {
+    /// 多步流程的入口：把 `steps` 展开成队列，先播第一步。
+    fn show(&mut self, mut p: ShowParams) -> Result<ShowResult, ErrorBody> {
+        let steps = std::mem::take(&mut p.steps);
+        if steps.is_empty() {
+            self.queue.clear();
+            return self.show_single(p);
+        }
+
+        // 除 targets/文案之外的参数（坐标空间、超时、效果、key…）各步共用。
+        let base = p.clone();
+        let mut queue: VecDeque<ShowParams> =
+            steps.into_iter().map(|step| to_show(&base, step)).collect();
+
+        let Some(first) = queue.pop_front() else {
+            return self.show_single(base);
+        };
+        self.queue = queue;
+        self.show_single(first)
+    }
+
+    /// 点中当前步骤的高亮区域：有下一步就播下一步，没有就关掉。
+    fn advance(&mut self) {
+        match self.queue.pop_front() {
+            Some(next) => {
+                if let Err(err) = self.show_single(next) {
+                    eprintln!(
+                        "下一步失败: {} {}",
+                        err.message,
+                        err.hint.unwrap_or_default()
+                    );
+                    self.clear_all();
+                }
+            }
+            None => self.clear_all(),
+        }
+    }
+
+    fn show_single(&mut self, p: ShowParams) -> Result<ShowResult, ErrorBody> {
         // 单个 --rect、多个 --rect、以及 targets 数组都合并到这里。
         let mut requested: Vec<([i32; 4], Option<String>)> = Vec::new();
         if let Some(rect) = p.rect {
@@ -564,6 +631,25 @@ impl State {
             .map(|tb| tb.height as i32 + key_pad_y * 2 + key_gap)
             .unwrap_or(0);
 
+        // 「下一步：…」放在气泡最后一行——有下一步才画。
+        let next_hint = self
+            .queue
+            .front()
+            .and_then(|next| next.title.clone().or_else(|| next.text.clone()));
+        let hint_bitmap = next_hint
+            .filter(|text| !text.trim().is_empty())
+            .and_then(|text| {
+                render_text(
+                    &format!("下一步：{text}"),
+                    text_width,
+                    px(self.cfg.font_px - 2).max(8),
+                )
+            });
+        let hint_block = hint_bitmap
+            .as_ref()
+            .map(|tb| tb.height as i32 + key_gap)
+            .unwrap_or(0);
+
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
         let target_union = rects.iter().fold(Rect::ZERO, |acc, r| acc.union(*r));
         let title_block = title_bitmap
@@ -578,7 +664,7 @@ impl State {
             .max()
             .unwrap_or(0);
         let body_h = text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
-        let content_h = title_block + body_h + key_block;
+        let content_h = title_block + body_h + key_block + hint_block;
 
         let card_placed = (content_w > 0).then(|| {
             place_preferring(
@@ -663,6 +749,14 @@ impl State {
                     ))
                 })
             }),
+            hint_at: card_rect.and_then(|card| {
+                hint_bitmap.as_ref().map(|_| {
+                    (
+                        (card.x + pad - union.x) as f32,
+                        (card.y + pad + title_block + body_h + key_block - union.y) as f32,
+                    )
+                })
+            }),
             title_at: card_rect.and_then(|card| {
                 title_bitmap.as_ref().map(|_| {
                     (
@@ -712,34 +806,6 @@ impl State {
             });
         }
 
-        let mut active = Active {
-            key: scene.key.clone(),
-            has_text: scene.callout.is_some(),
-            targets: scene.targets.len(),
-            total: timeout,
-            remaining: timeout.unwrap_or_default(),
-            last_tick: Instant::now(),
-            shown_at: Instant::now(),
-            paused: false,
-            paused_total: Duration::ZERO,
-            animate: !same_key,
-            card_screen: card_rect,
-            geom,
-            title: title_bitmap,
-            text: text_bitmap,
-            keycap: shortcut_bitmap,
-            effects,
-            accent: self.cfg.accent,
-            theme: self.cfg.theme,
-            effect: EffectWindow::new(union).map_err(internal)?,
-            _masks: Vec::new(),
-        };
-
-        let initial_opacity = if same_key { 1.0 } else { 0.0 };
-        let Some(bgra) = render_active(&active, initial_opacity) else {
-            return Err(internal("渲染失败"));
-        };
-
         self.clear_all();
 
         // 洞只比目标大一点点：圆形的圈画应当落在压暗的背景上，而不是落在一块亮矩形里。
@@ -759,10 +825,41 @@ impl State {
                 );
             }
             for r in &plan.rects {
-                let window = MaskWindow::new(*r, dim_alpha).map_err(internal)?;
+                let window = MaskWindow::new(*r, dim_alpha, !p.click_through).map_err(internal)?;
                 masks.push(window);
             }
         }
+
+        // 效果窗口必须**最后**创建：同一进程里后创建的 topmost 窗口在上面。
+        // 反过来，遮罩会盖住卡片——看起来就像"气泡在遮罩后面"。
+        let active = Active {
+            key: scene.key.clone(),
+            has_text: scene.callout.is_some(),
+            targets: scene.targets.len(),
+            total: timeout,
+            remaining: timeout.unwrap_or_default(),
+            last_tick: Instant::now(),
+            shown_at: Instant::now(),
+            paused: false,
+            paused_total: Duration::ZERO,
+            animate: !same_key,
+            card_screen: card_rect,
+            geom,
+            title: title_bitmap,
+            text: text_bitmap,
+            keycap: shortcut_bitmap,
+            hint: hint_bitmap,
+            effects,
+            accent: self.cfg.accent,
+            theme: self.cfg.theme,
+            effect: EffectWindow::new(union).map_err(internal)?,
+            _masks: masks,
+        };
+
+        let initial_opacity = if same_key { 1.0 } else { 0.0 };
+        let Some(bgra) = render_active(&active, initial_opacity) else {
+            return Err(internal("渲染失败"));
+        };
 
         if !active
             .effect
@@ -780,7 +877,6 @@ impl State {
         set_close_hit(close_hit_screen.map(offset));
         let _ = take_dismiss_request();
 
-        active._masks = masks;
         self.active = Some(active);
         self.last_activity = Instant::now();
         self.arm();
@@ -844,6 +940,27 @@ fn cleanup_captures(dir: &std::path::Path) {
         if path.extension().and_then(|ext| ext.to_str()) == Some("png") {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// 把一步展开成一次完整的 show 参数，除目标与文案外都沿用外层。
+fn to_show(base: &ShowParams, step: StepSpec) -> ShowParams {
+    ShowParams {
+        rect: None,
+        targets: step.targets,
+        capture: base.capture.clone(),
+        space: base.space.clone(),
+        text: step.text,
+        title: step.title,
+        step: None,
+        shortcut: step.shortcut,
+        placement: base.placement.clone(),
+        dry_run: base.dry_run,
+        effects: base.effects.clone(),
+        timeout: base.timeout,
+        key: base.key.clone(),
+        steps: Vec::new(),
+        click_through: base.click_through,
     }
 }
 
@@ -911,6 +1028,16 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
                     mask_height: tb.height,
                     color: active.theme.text(),
                 },
+            }),
+            _ => None,
+        },
+        hint: match (&active.hint, active.geom.hint_at) {
+            (Some(tb), Some((x, y))) => Some(TextLayer {
+                rect: RectF::new(x, y, tb.width as f32, tb.height as f32),
+                mask: &tb.alpha,
+                mask_width: tb.width,
+                mask_height: tb.height,
+                color: active.theme.hint(),
             }),
             _ => None,
         },

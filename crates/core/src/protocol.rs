@@ -181,6 +181,25 @@ pub struct ShowParams {
     pub timeout: Option<f32>,
     #[serde(default)]
     pub key: Option<String>,
+    /// 多步流程：给出时按顺序播放，点中当前步骤的高亮区域就前进到下一步。
+    #[serde(default)]
+    pub steps: Vec<StepSpec>,
+    /// 遮罩区域放行点击（默认拦截：遮罩下的东西点不动）。
+    #[serde(default)]
+    pub click_through: bool,
+}
+
+/// 多步流程里的一步。坐标、超时、效果等沿用外层参数。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StepSpec {
+    #[serde(default)]
+    pub targets: Vec<TargetSpec>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub shortcut: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

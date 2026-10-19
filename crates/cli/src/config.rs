@@ -39,6 +39,14 @@ impl Theme {
         }
     }
 
+    /// 卡片最后一行「下一步：…」的颜色，比正文淡。
+    pub fn hint(self) -> [u8; 4] {
+        match self {
+            Theme::Dark => [255, 255, 255, 150],
+            Theme::Light => [0, 0, 0, 140],
+        }
+    }
+
     pub fn keycap_bg(self) -> [u8; 4] {
         match self {
             Theme::Dark => [255, 255, 255, 26],

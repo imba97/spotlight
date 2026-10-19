@@ -74,6 +74,8 @@ pub struct Ctx<'a> {
     pub progress: Option<Progress>,
     pub close: Option<CloseMark>,
     pub keycap: Option<Keycap<'a>>,
+    /// 卡片最后一行提示，例如「下一步：…」。比正文淡。
+    pub hint: Option<TextLayer<'a>>,
     pub badges: &'a [Badge<'a>],
 }
 
@@ -215,6 +217,10 @@ pub fn render_frame(
             pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
         }
         blend_text(&mut pixmap, &keycap.text);
+    }
+
+    if let Some(hint) = ctx.hint {
+        blend_text(&mut pixmap, &hint);
     }
 
     for badge in ctx.badges {

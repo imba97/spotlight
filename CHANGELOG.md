@@ -15,6 +15,8 @@
 - `show --dry-run`：只校验坐标和参数，返回换算后的屏幕矩形，不创建任何窗口
 - `clear` / `status` / `doctor` / `reload` / `version`
 - 所有命令支持 `--json`
+- `show --file` 支持 `steps` 多步流程：点中当前步骤的高亮区域自动跳下一步，卡片末行显示下一步提示
+- `--click-through`：默认遮罩拦截点击（遮罩下的东西点不动），加了才放行
 
 ### 视觉
 

@@ -67,6 +67,22 @@ pub fn take_display_change() -> bool {
     DISPLAY_CHANGED.swap(false, Ordering::SeqCst)
 }
 
+/// 当前按下的鼠标键位掩码：1=左 2=右 4=中。
+///
+/// 用轮询而不是钩子：钩子会"看见并吞掉"事件，而我们要的是**观察但不打扰**——
+/// 用户点高亮区域时，那个点击必须照常落到下面的应用上。
+pub fn mouse_buttons() -> u8 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    let mut mask = 0u8;
+    for (bit, vk) in [(1u8, 0x01i32), (2, 0x02), (4, 0x04)] {
+        // 最高位是"当前按下"
+        if unsafe { GetAsyncKeyState(vk) } < 0 {
+            mask |= bit;
+        }
+    }
+    mask
+}
+
 pub fn cursor_pos() -> (i32, i32) {
     let mut pt = POINT { x: 0, y: 0 };
     unsafe {
@@ -89,7 +105,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         return HTCLIENT as LRESULT;
                     }
                 }
-                HTTRANSPARENT as LRESULT
+                // 带 WS_EX_TRANSPARENT 的遮罩要放行（默认行为）；
+                // 没带的说明是"拦截点击"模式，这里必须让鼠标停在自己身上。
+                let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+                if style & WS_EX_TRANSPARENT != 0 {
+                    HTTRANSPARENT as LRESULT
+                } else {
+                    HTCLIENT as LRESULT
+                }
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             // 分辨率 / DPI / 显示器插拔：当前画面对应的坐标已经不可信
@@ -158,7 +181,8 @@ pub struct MaskWindow {
 }
 
 impl MaskWindow {
-    pub fn new(rect: Rect, alpha: u8) -> Result<Self, String> {
+    /// lock 为 true 时遮罩会拦住点击（鼠标无法穿透到下层应用）。
+    pub fn new(rect: Rect, alpha: u8, block: bool) -> Result<Self, String> {
         ensure_class()?;
         if rect.is_empty() {
             return Err("empty rect".into());
@@ -167,12 +191,13 @@ impl MaskWindow {
         let title = wide("Spotlight");
 
         unsafe {
+            // 拦截点击时不加 WS_EX_TRANSPARENT：加了这个扩展样式，鼠标事件会穿透。
+            let mut ex_style = WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+            if !block {
+                ex_style |= WS_EX_TRANSPARENT;
+            }
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED
-                    | WS_EX_TRANSPARENT
-                    | WS_EX_NOACTIVATE
-                    | WS_EX_TOOLWINDOW
-                    | WS_EX_TOPMOST,
+                ex_style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 class.as_ptr(),
                 title.as_ptr(),
                 WS_POPUP,

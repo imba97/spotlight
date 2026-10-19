@@ -51,7 +51,7 @@ pub fn run() -> i32 {
     // 2. 盖上遮罩
     let mut windows = Vec::with_capacity(masks.len());
     for r in &masks {
-        match MaskWindow::new(*r, ALPHA) {
+        match MaskWindow::new(*r, ALPHA, false) {
             Ok(w) => windows.push(w),
             Err(e) => return fail(&e),
         }

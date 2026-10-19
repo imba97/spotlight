@@ -77,8 +77,11 @@ spotlight show --file scene.json
 }
 ```
 
-可直接运行的例子在 [xamples/scene.json](examples/scene.json)（用屏幕坐标，不依赖截图）。
+可直接运行的例子在 [`examples/scene.json`](examples/scene.json)（单步）和
+[`examples/tour.json`](examples/tour.json)（多步）。
 
+多步流程用 `steps` 数组：点中当前步骤的高亮区域就自动跳下一步，卡片最后一行会写
+「下一步：…」，最后一步点完自动关闭。遮罩默认拦住点击，想放行加 `--click-through`。
 ## 命令
 
 | 命令 | 作用 |
@@ -105,6 +108,7 @@ spotlight show --file scene.json
 --placement <方位> auto / top / bottom / left / right（放不下会自动换边）
 --dry-run          只校验坐标与参数、返回换算结果，不真的显示
 --key <id>         相同 key 原地替换，不重播入场动画
+--click-through    遮罩区域放行点击（默认拦截：遮罩下的东西点不动）
 ```
 
 退出码：`0` 成功、`2` 参数错误、`3` 坐标或截图问题、`4` 守护进程不可用、`5` key 不存在。

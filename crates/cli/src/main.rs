@@ -109,7 +109,7 @@ fn cmd_show(rest: &[String]) -> i32 {
     if let Err(err) = apply_overrides(&mut params, &parsed) {
         return usage_error(&err);
     }
-    if params.rect.is_none() && params.targets.is_empty() {
+    if params.rect.is_none() && params.targets.is_empty() && params.steps.is_empty() {
         return usage_error("show 需要 --rect x,y,w,h 或 --file <scene.json>");
     }
 
