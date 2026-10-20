@@ -86,8 +86,6 @@ show 参数:
   --shortcut <Ctrl+B> 快捷键提示，显示成卡片底部的键帽
   --timeout <秒|auto>  0 表示常驻；缺省按字数估算
   --placement <方位>   auto / top / bottom / left / right（放不下会自动回退）
-  --click-advance      点中高亮区域就进入下一步（会收下这次点击再补发）
-  --click-through      遮罩区域放行点击（默认拦截：遮罩下的东西点不动）
   --dry-run            只校验坐标和参数，不真的显示
   --key <id>           相同 key 原地替换
   --json               机器可读输出"
@@ -160,12 +158,6 @@ fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(),
     }
     if let Some(placement) = parsed.value("placement") {
         params.placement = Some(placement.to_string());
-    }
-    if parsed.flag("click-advance") {
-        params.click_advance = true;
-    }
-    if parsed.flag("click-through") {
-        params.click_through = true;
     }
     if parsed.flag("dry-run") {
         params.dry_run = true;
