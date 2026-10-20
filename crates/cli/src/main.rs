@@ -159,6 +159,9 @@ fn apply_overrides(params: &mut ShowParams, parsed: &args::Parsed) -> Result<(),
     if let Some(placement) = parsed.value("placement") {
         params.placement = Some(placement.to_string());
     }
+    if parsed.flag("click-advance") {
+        params.click_advance = true;
+    }
     if parsed.flag("dry-run") {
         params.dry_run = true;
     }

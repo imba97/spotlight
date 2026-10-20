@@ -537,7 +537,10 @@ mod tests {
                 max_corner = max_corner.max(buf[idx]);
             }
         }
-        assert!(max_corner > 60, "圆角外侧应被遮罩，实际最大 alpha={max_corner}");
+        assert!(
+            max_corner > 60,
+            "圆角外侧应被遮罩，实际最大 alpha={max_corner}"
+        );
         // 洞的中心不该被涂
         let center = ((40 * 100 + 50) * 4 + 3) as usize;
         assert_eq!(buf[center], 0);

@@ -187,6 +187,10 @@ pub struct ShowParams {
     /// 遮罩区域放行点击（默认拦截：遮罩下的东西点不动）。
     #[serde(default)]
     pub click_through: bool,
+    /// 点中高亮区域就前进到下一步（默认关闭）。
+    /// 注意：这会吃掉那次点击，然后由工具补一次——补的那次在受限环境里可能不生效。
+    #[serde(default)]
+    pub click_advance: bool,
 }
 
 /// 多步流程里的一步。坐标、超时、效果等沿用外层参数。

@@ -31,10 +31,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GetCursorPos,
     GetSystemMetrics, GetWindowLongPtrW, HTCLIENT, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA,
     LoadCursorW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
-    ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SM_CYSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_NCHITTEST,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const CLASS_NAME: &str = "SpotlightOverlayWindow";
@@ -49,6 +50,10 @@ static REGISTER: Once = Once::new();
 static CLOSE_HIT: Mutex<Option<Rect>> = Mutex::new(None);
 /// 用户点了关闭按钮。主线程在 tick 里消费。
 static DISMISS_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 当前步骤的高亮矩形（屏幕坐标）。落在这里的点击会被我们收下并转发。
+static CLICK_TARGETS: Mutex<Vec<Rect>> = Mutex::new(Vec::new());
+/// 收下的点击：(x, y, 按键)，等守护进程转发给下面的应用。
+static PENDING_CLICK: Mutex<Option<(i32, i32, u8)>> = Mutex::new(None);
 /// 需要拦截点击的遮罩窗口。只有它们返回 HTCLIENT，其余一律放行。
 static BLOCKING: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 /// 显示器配置变了（分辨率/DPI/插拔）。旧坐标全部作废。
@@ -93,6 +98,77 @@ pub fn cursor_pos() -> (i32, i32) {
     (pt.x, pt.y)
 }
 
+/// 设置"点中就前进"的屏幕矩形。
+pub fn set_click_targets(rects: Vec<Rect>) {
+    if let Ok(mut guard) = CLICK_TARGETS.lock() {
+        *guard = rects;
+    }
+}
+
+/// 取走一次"点中了高亮区域"的事件：(x, y, 按键)。
+pub fn take_click() -> Option<(i32, i32, u8)> {
+    PENDING_CLICK.lock().ok().and_then(|mut guard| guard.take())
+}
+
+/// 把收下的那次点击补给下面的应用——"收下再转发"的后半段。
+///
+/// 用 `SendInput` 而不是 `SetCursorPos` + `mouse_event`：前者能一次说清"移到哪 + 按下 + 抬起"，
+/// 而且在这个环境里是唯一一条真能注入成功的路径（`SetCursorPos` 在这里返回 0）。
+pub fn forward_click(x: i32, y: i32, button: u8) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    let (down, up) = match button {
+        2 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        4 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+    };
+
+    // 绝对坐标要归一化到 0..65535。
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    let nx = ((x as f64 + 0.5) * 65_535.0 / width.max(1) as f64) as i32;
+    let ny = ((y as f64 + 0.5) * 65_535.0 / height.max(1) as f64) as i32;
+
+    let make = |flags: u32| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: nx,
+                dy: ny,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let events = [make(down), make(up)];
+    let sent = unsafe {
+        SendInput(
+            events.len() as u32,
+            events.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    let _ = sent;
+}
+
+/// 光标是否落在某个高亮矩形里（屏幕坐标）。
+fn cursor_over_target() -> bool {
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        GetCursorPos(&mut pt);
+    }
+    CLICK_TARGETS
+        .lock()
+        .map(|rects| rects.iter().any(|r| r.contains_point(pt.x, pt.y)))
+        .unwrap_or(false)
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -106,6 +182,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if rect.contains_point(pt.x, pt.y) {
                         return HTCLIENT as LRESULT;
                     }
+                }
+                // 高亮区域：收下这次点击（随后由守护进程转发给下面的应用）。
+                if cursor_over_target() {
+                    return HTCLIENT as LRESULT;
                 }
                 // 只有显式登记为"拦截点击"的遮罩才吃鼠标事件；
                 // 卡片窗口必须放行，否则会挡住别的区域。
@@ -125,7 +205,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 DISPLAY_CHANGED.store(true, Ordering::SeqCst);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
-            WM_LBUTTONUP => {
+            // 三个键都算"点中了"：左键、右键、中键。
+            WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
                 let hit = CLOSE_HIT.lock().ok().and_then(|guard| *guard);
                 if let Some(rect) = hit {
                     let mut pt = POINT { x: 0, y: 0 };
@@ -133,6 +214,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     ScreenToClient(hwnd, &mut pt);
                     if rect.contains_point(pt.x, pt.y) {
                         DISMISS_REQUESTED.store(true, Ordering::SeqCst);
+                        return 0;
+                    }
+                }
+                if let Ok(rects) = CLICK_TARGETS.lock() {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    if rects.iter().any(|r| r.contains_point(pt.x, pt.y)) {
+                        let button = match msg {
+                            WM_RBUTTONUP => 2u8,
+                            WM_MBUTTONUP => 4u8,
+                            _ => 1u8,
+                        };
+                        if let Ok(mut pending) = PENDING_CLICK.lock() {
+                            *pending = Some((pt.x, pt.y, button));
+                        }
                         return 0;
                     }
                 }

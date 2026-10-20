@@ -28,8 +28,8 @@ use spotlight_platform::win::process::SingleInstance;
 use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
-    MaskWindow, cursor_pos, enable_dpi_awareness, set_close_hit, take_dismiss_request,
-    take_display_change,
+    MaskWindow, cursor_pos, enable_dpi_awareness, forward_click, set_click_targets, set_close_hit,
+    take_click, take_dismiss_request, take_display_change,
 };
 use spotlight_render::{
     Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
@@ -103,6 +103,8 @@ struct Active {
     text: Option<TextBitmap>,
     keycap: Option<TextBitmap>,
     hint: Option<TextBitmap>,
+    /// 点中高亮区域是否前进。
+    click_advance: bool,
     /// 高亮洞（窗口坐标）与它的圆角，用来补圆角外侧的遮罩。
     holes: Vec<Rect>,
     hole_radius: f32,
@@ -128,6 +130,8 @@ struct State {
     captures: VecDeque<CaptureEntry>,
     /// 多步流程里还没播的步骤。
     queue: VecDeque<ShowParams>,
+    /// 上一次转发点击的时刻：转发出来的那次点击不能被自己再收一遍。
+    last_forward: Instant,
     /// 上一帧的鼠标按键状态，用来识别“刚按下”的边沿。
     next_capture: u64,
     hotkey: bool,
@@ -141,6 +145,7 @@ impl State {
             started: Instant::now(),
             last_activity: Instant::now(),
             queue: VecDeque::new(),
+            last_forward: Instant::now() - Duration::from_secs(10),
             active: None,
             timer_ms: 0,
             should_exit: false,
@@ -175,6 +180,17 @@ impl State {
         }
         if take_dismiss_request() {
             self.clear_all();
+            return;
+        }
+
+        // 收下一次"点中了高亮区域"的点击：推进步骤，并把这次点击补给下面的应用。
+        // 转发会再产生一次点击（可能落在新画面上），250ms 内的点击一律丢弃。
+        if self.last_forward.elapsed() < Duration::from_millis(250) {
+            let _ = take_click();
+        } else if self.active.is_some()
+            && let Some(click) = take_click()
+        {
+            self.advance(Some(click));
             return;
         }
 
@@ -229,6 +245,7 @@ impl State {
             self.last_activity = Instant::now();
         }
         set_close_hit(None);
+        set_click_targets(Vec::new());
         if self.hotkey {
             hotkey::unregister(message::HOTKEY_ID);
             self.hotkey = false;
@@ -392,7 +409,15 @@ impl State {
     }
 
     /// 点中当前步骤的高亮区域：有下一步就播下一步，没有就关掉。
-    fn advance(&mut self) {
+    fn advance(&mut self, click: Option<(i32, i32, u8)>) {
+        if let Some((x, y, button)) = click {
+            // 先让旧窗口彻底消失，再把点击补给应用；
+            // 等 50ms 是为了让这次点击先被应用处理完，别被下一步的遮罩拦下来。
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            forward_click(x, y, button);
+            self.last_forward = Instant::now();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         match self.queue.pop_front() {
             Some(next) => {
                 if let Err(err) = self.show_single(next) {
@@ -815,6 +840,10 @@ impl State {
 
         // 效果窗口必须**最后**创建：同一进程里后创建的 topmost 窗口在上面。
         // 反过来，遮罩会盖住卡片——看起来就像"气泡在遮罩后面"。
+        if p.click_advance {
+            set_click_targets(rects.to_vec());
+        }
+
         let active = Active {
             key: scene.key.clone(),
             has_text: scene.callout.is_some(),
@@ -832,6 +861,7 @@ impl State {
             text: text_bitmap,
             keycap: shortcut_bitmap,
             hint: hint_bitmap,
+            click_advance: p.click_advance,
             holes: holes.iter().map(|r| offset(*r)).collect(),
             hole_radius: dip(self.cfg.radius) + hole_pad as f32,
             dim: [0, 0, 0, dim_alpha],
@@ -947,6 +977,7 @@ fn to_show(base: &ShowParams, step: StepSpec) -> ShowParams {
         key: base.key.clone(),
         steps: Vec::new(),
         click_through: base.click_through,
+        click_advance: base.click_advance,
     }
 }
 
@@ -1073,14 +1104,36 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
         .map(|r| RectF::from_rect(*r))
         .collect();
 
-    render_frame(
+    // 先把要画的东西算出来，最后统一给高亮区域补一层 alpha=1 的"实体"。
+    // 注意必须在这里做：动画期间每帧重绘，在外面补会被下一帧覆盖掉。
+    let mut frame = render_frame(
         active.geom.union.w as u32,
         active.geom.union.h as u32,
         &targets,
         &active.effects,
         &ctx,
         opacity,
-    )
+    )?;
+
+    // 分层窗口按像素 alpha 做命中测试：透明的地方点击会直接穿过去。
+    // 给高亮区域一个近乎不可见的 alpha，点击才会落到我们身上，再转发给下面的应用。
+    let width = active.geom.union.w;
+    let height = active.geom.union.h;
+    if !active.click_advance {
+        return Some(frame);
+    }
+    for target in &active.geom.targets {
+        for y in target.y.max(0)..target.bottom().min(height) {
+            for x in target.x.max(0)..target.right().min(width) {
+                let index = ((y * width + x) * 4 + 3) as usize;
+                if index < frame.len() && frame[index] == 0 {
+                    frame[index] = 1;
+                }
+            }
+        }
+    }
+
+    Some(frame)
 }
 
 fn repaint(active: &Active, opacity: f32) {
@@ -1242,7 +1295,7 @@ pub fn run() -> i32 {
             }
             Event::Timer => state.tick(),
             // 多步流程里热键是"下一步"，没有下一步才关掉。
-            Event::Hotkey => state.advance(),
+            Event::Hotkey => state.advance(None),
         }
         if state.should_exit {
             break;
