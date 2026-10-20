@@ -366,7 +366,7 @@ fn draw_stop(pixmap: &mut Pixmap, stop: &StopMark) {
     }
 
     // 内部实心方块——"停止"而不是"关闭"
-    let side = radius * 0.86;
+    let side = radius * 0.95;
     if let Some(square) = tiny_skia::Rect::from_xywh(cx - side / 2.0, cy - side / 2.0, side, side) {
         let mut builder = PathBuilder::new();
         builder.push_rect(square);
