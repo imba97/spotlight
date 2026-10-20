@@ -25,11 +25,11 @@
 1) 截屏并拿到坐标映射
    {{SPOTLIGHT}} capture --json
    返回：
-   - result.capture           截图 id，例如 "c-1"
-   - result.image.path        截图文件路径（你要打开它看）
-   - result.image.width/height 截图的像素尺寸
-   - result.segments[]        截图区域与屏幕区域的对应关系
-   
+   - result.capture             截图 id，例如 "c-1"
+   - result.image.path          截图文件路径（你要打开它看）
+   - result.image.width/height  截图的像素尺寸
+   - result.segments[]          截图区域与屏幕区域的对应关系
+
 2) 高亮（核心命令）
    {{SPOTLIGHT}} show --capture <id> --rect x,y,w,h --text "点这里" [其它参数]
    - --rect 用的是【截图上的像素坐标】，不是屏幕坐标，工具会自动换算
@@ -42,9 +42,27 @@
    - --effect ring/brush/glow/arrow/crosshair，可重复；默认 ring
    - --placement top/bottom/left/right 指定卡片方位；不传自动选
    - --key <id> 相同 key 再 show 会原地替换，不重播动画
+   - --click-through 遮罩区域放行点击（默认拦截：遮罩下的东西点不动）
+   - --click-advance 点中高亮区域就进入下一步（会收下这次点击，再由工具补发一次；
+     补发在受限环境可能无效，见"多步流程"）
    - --dry-run 只校验坐标、返回换算结果，不显示（不确定时先用它）
 
-3) 其它
+3) 多步流程（界面不变、只是"点完这里点那里"）
+   用 --file 传 steps 数组，一次把整条流程交给工具：
+   {
+     "space": "screen", "timeout": 0,
+     "steps": [
+       { "targets": [{ "rect": [300,300,200,60] }], "title": "第 1 步", "text": "先点这里" },
+       { "targets": [{ "rect": [700,500,200,60] }], "title": "第 2 步", "text": "再点这里" }
+     ]
+   }
+   - 卡片最后一行会自动显示「下一步：第 2 步」
+   - 用户按 Ctrl+Alt+Esc 进入下一步，最后一步时这个热键就是关闭
+   - 加 --click-advance 可以改成"点中高亮区域就下一步"，但那次点击会被工具收下、
+     再补发一次；补发依赖输入注入，在受限会话里可能被静默丢弃。拿不准就用热键
+   - 只有界面会变的情况（点开菜单、弹窗）才必须由你重新 capture 再 show
+
+4) 其它
    {{SPOTLIGHT}} status --json     看当前有没有画面、还剩多久
    {{SPOTLIGHT}} clear             立刻清掉画面
    {{SPOTLIGHT}} captures          看缓存了哪些截图（id 记混时用）
@@ -54,8 +72,7 @@
 第 0 步（每次会话第一次用时）：跑一次 doctor，确认守护进程、屏幕、DPI 正常。
 第 1 步：capture --json，记下 capture id 和 image.path。
 第 2 步：打开 image.path 看截图，在图上量出目标矩形的 (x, y, w, h)。
-第 3 步（建议）：加 --dry-run 先跑一次，检查 result.targets 是不是你期望的屏幕位置，
-        以及 result.warnings 有没有报文字过长。
+第 3 步（建议）：加 --dry-run 先跑一次，检查 result.targets 是不是你期望的屏幕位置。
 第 4 步：去掉 --dry-run 正式 show。
 第 5 步：对用户说一句话说明这一步，然后等用户完成，再进入下一步。
 
@@ -64,11 +81,11 @@
    - 用 --capture <id> 时，--rect 是截图上的像素
    - 用 --space screen 时，--rect 是屏幕物理像素（只在没有截图、且用户直接给了坐标时用）
    两个都不给，工具会报错——这是故意的，防止静默偏几十像素。
-2. 一次只讲一步。多步操作要逐步来：show 第 1 步 → 用户做完 → show 第 2 步。
-   不要一次 show 五个框把屏幕糊满。
+2. 一次只讲一步。界面会变的多步操作要逐步来：show 第 1 步 → 用户做完 → 重新 capture →
+   show 第 2 步。界面不变的连续点击可以用 steps 一次交给工具。
 3. 文案要短。卡片正文控制在 30 字以内——默认宽度和字号下大约能放 600 多字，
    再长会被截断（工具会在 warnings 里告诉你）。写"做什么"，不要写"为什么"。
-4. --timeout 默认让它自动估。给用户留出阅读时间；只有需要用户慢慢对照时才用 0。
+4. --timeout 默认让它自动估。给用户留出阅读时间；多步流程建议用 0，让用户按热键推进。
 5. 矩形要贴合目标：比按钮大一圈会让用户困惑，太小则圈不住。看图上按钮的实际边界，
    上下左右各留 2–6 像素余量即可。
 6. 不确定坐标就先 --dry-run，用返回的 debug 字段自查：
@@ -114,7 +131,8 @@
 规则：--rect 是截图像素（工具会换算）；一次只标一步；文案 30 字以内；
 不确定就先加 --dry-run 看 result.targets 对不对；报错读 hint。
 
-多步操作：show 第 1 步 → 用户做完 → 重新 capture → show 第 2 步。
+界面不变的多步操作：用 --file 传 steps 数组，用户按 Ctrl+Alt+Esc 进下一步。
+界面会变的情况：show 第 1 步 → 用户做完 → 重新 capture → show 第 2 步。
 ```
 
 ---
@@ -127,11 +145,12 @@
 - 「这个网页怎么加书签」
 - 「帮我找到微信里的聊天记录搜索」
 
-测试时重点看三件事：
+测试时重点看四件事：
 
 1. **框准不准** —— 如果偏了，让它 `--dry-run` 打印 `result.targets` 对比
 2. **卡片挡不挡目标** —— 挡到了让它换 `--placement`
 3. **文案够不够短** —— 太长会触发 `warnings`
+4. **多步流程推不推得动** —— 按 `Ctrl+Alt+Esc` 看框是否跳到下一处
 
 如果 AI 没打开截图就开始报坐标，说明它跳过了第 2 步——那是提示词没被遵守，
 可以在系统提示里再强调一次"必须先看图再量坐标"。
