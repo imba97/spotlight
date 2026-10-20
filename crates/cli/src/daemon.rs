@@ -669,12 +669,12 @@ impl State {
             px(120).max(40) as u32,
             px(self.cfg.font_px).max(8),
         );
-        let button_pad_x = px(14);
-        let button_pad_y = px(7);
-        let button_gap = px(8);
+        let button_pad_x = px(16);
+        let button_pad_y = px(5);
+        let button_gap = px(14);
         // 按钮宽度有下限：只有两个字的「完成」不该缩成一小团，
         // 和「下一步」放在一起时也该是同一个体量。
-        let button_min_w = px(88);
+        let button_min_w = px(72);
         let button_w = button_bitmap
             .as_ref()
             .map(|tb| (tb.width as i32 + button_pad_x * 2).max(button_min_w));
@@ -755,8 +755,8 @@ impl State {
 
         let button_rects = card_rect.and_then(|card| {
             button_bitmap.as_ref().map(|tb| {
-                // 按钮铺满卡片内宽：左右内边距必须和标题、正文对齐。
-                let width = (card.w - pad * 2).max(tb.width as i32 + button_pad_x * 2);
+                // 按文字宽度自适应，左边和标题、正文对齐；不再铺满整行。
+                let width = (tb.width as i32 + button_pad_x * 2).max(button_min_w);
                 let pill = Rect::new(
                     card.x + pad,
                     card.y + pad + title_block + body_h + key_block,
