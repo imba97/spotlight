@@ -28,12 +28,12 @@ use spotlight_platform::win::process::SingleInstance;
 use spotlight_platform::win::shot;
 use spotlight_platform::win::text::{TextBitmap, render_text};
 use spotlight_platform::win::{
-    MaskWindow, cursor_pos, enable_dpi_awareness, forward_click, set_click_targets, set_close_hit,
-    take_click, take_dismiss_request, take_display_change,
+    MaskWindow, cursor_pos, enable_dpi_awareness, set_action_hit, set_stop_hit,
+    take_action_request, take_dismiss_request, take_display_change,
 };
 use spotlight_render::{
-    Badge, Card, CloseMark, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, TextLayer,
-    build_effects, render_frame,
+    Badge, Button, Card, Ctx, Effect, EffectStyle, KNOWN_EFFECTS, Keycap, Progress, StopMark,
+    TextLayer, build_effects, render_frame,
 };
 
 use crate::config::{self, Config, Theme};
@@ -81,9 +81,19 @@ struct Geom {
     badges: Vec<(Rect, TextBitmap)>,
     keycap: Option<Rect>,
     keycap_text: Option<Rect>,
-    hint_at: Option<(f32, f32)>,
+    /// 动作按钮：(胶囊, 文字)。
+    button: Option<(Rect, Rect)>,
     title_at: Option<(f32, f32)>,
     text_at: Option<(f32, f32)>,
+}
+
+/// 卡片上那个按钮点了会发生什么。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    /// 还有下一步：跳到下一步。
+    Next,
+    /// 已经是最后一步：结束并告诉调用方"完成了"。
+    Done,
 }
 
 struct Active {
@@ -102,9 +112,9 @@ struct Active {
     title: Option<TextBitmap>,
     text: Option<TextBitmap>,
     keycap: Option<TextBitmap>,
-    hint: Option<TextBitmap>,
-    /// 点中高亮区域是否前进。
-    click_advance: bool,
+    button: Option<TextBitmap>,
+    /// 按钮做的事：下一步，还是完成。
+    action: Action,
     /// 高亮洞（窗口坐标）与它的圆角，用来补圆角外侧的遮罩。
     holes: Vec<Rect>,
     hole_radius: f32,
@@ -130,11 +140,10 @@ struct State {
     captures: VecDeque<CaptureEntry>,
     /// 多步流程里还没播的步骤。
     queue: VecDeque<ShowParams>,
-    /// 上一次转发点击的时刻：转发出来的那次点击不能被自己再收一遍。
-    last_forward: Instant,
-    /// 上一帧的鼠标按键状态，用来识别“刚按下”的边沿。
     next_capture: u64,
     hotkey: bool,
+    /// 上一次画面是怎么结束的：completed / stopped。
+    ended: Option<String>,
     cfg: Config,
 }
 
@@ -145,7 +154,7 @@ impl State {
             started: Instant::now(),
             last_activity: Instant::now(),
             queue: VecDeque::new(),
-            last_forward: Instant::now() - Duration::from_secs(10),
+            ended: None,
             active: None,
             timer_ms: 0,
             should_exit: false,
@@ -179,18 +188,11 @@ impl State {
             return;
         }
         if take_dismiss_request() {
-            self.clear_all();
+            self.finish("stopped");
             return;
         }
-
-        // 收下一次"点中了高亮区域"的点击：推进步骤，并把这次点击补给下面的应用。
-        // 转发会再产生一次点击（可能落在新画面上），250ms 内的点击一律丢弃。
-        if self.last_forward.elapsed() < Duration::from_millis(250) {
-            let _ = take_click();
-        } else if self.active.is_some()
-            && let Some(click) = take_click()
-        {
-            self.advance(Some(click));
+        if take_action_request() {
+            self.on_action();
             return;
         }
 
@@ -244,8 +246,8 @@ impl State {
         if self.active.take().is_some() {
             self.last_activity = Instant::now();
         }
-        set_close_hit(None);
-        set_click_targets(Vec::new());
+        set_stop_hit(None);
+        set_action_hit(None);
         if self.hotkey {
             hotkey::unregister(message::HOTKEY_ID);
             self.hotkey = false;
@@ -303,6 +305,7 @@ impl State {
             version: spotlight_core::VERSION.to_string(),
             uptime_ms: self.started.elapsed().as_millis() as u64,
             hotkey: self.hotkey,
+            ended: self.ended.clone(),
             scene: self.active.as_ref().map(|a| SceneSummary {
                 key: a.key.clone(),
                 targets: a.targets,
@@ -390,6 +393,7 @@ impl State {
     }
     /// 多步流程的入口：把 `steps` 展开成队列，先播第一步。
     fn show(&mut self, mut p: ShowParams) -> Result<ShowResult, ErrorBody> {
+        self.ended = None;
         let steps = std::mem::take(&mut p.steps);
         if steps.is_empty() {
             self.queue.clear();
@@ -408,31 +412,36 @@ impl State {
         self.show_single(first)
     }
 
-    /// 点中当前步骤的高亮区域：有下一步就播下一步，没有就关掉。
-    fn advance(&mut self, click: Option<(i32, i32, u8)>) {
-        if let Some((x, y, button)) = click {
-            // 先让旧窗口彻底消失，再把点击补给应用；
-            // 等 50ms 是为了让这次点击先被应用处理完，别被下一步的遮罩拦下来。
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            forward_click(x, y, button);
-            self.last_forward = Instant::now();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        match self.queue.pop_front() {
-            Some(next) => {
-                if let Err(err) = self.show_single(next) {
-                    eprintln!(
-                        "下一步失败: {} {}",
-                        err.message,
-                        err.hint.unwrap_or_default()
-                    );
-                    self.clear_all();
-                }
-            }
-            None => self.clear_all(),
+    /// 按钮被按下：下一步 / 完成。
+    fn on_action(&mut self) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
+        match active.action {
+            Action::Next => self.advance(),
+            Action::Done => self.finish("completed"),
         }
     }
 
+    /// 前进到下一步；没有下一步就按"完成"处理。
+    fn advance(&mut self) {
+        self.clear_all();
+        match self.queue.pop_front() {
+            Some(next) => {
+                if let Err(err) = self.show_single(next) {
+                    eprintln!("下一步失败: {}", err.message);
+                    self.finish("stopped");
+                }
+            }
+            None => self.finish("completed"),
+        }
+    }
+
+    /// 结束当前画面，并记下这次是怎么结束的，供调用方查询。
+    fn finish(&mut self, outcome: &str) {
+        self.ended = Some(outcome.to_string());
+        self.clear_all();
+    }
     fn show_single(&mut self, p: ShowParams) -> Result<ShowResult, ErrorBody> {
         // 单个 --rect、多个 --rect、以及 targets 数组都合并到这里。
         let mut requested: Vec<([i32; 4], Option<String>)> = Vec::new();
@@ -639,23 +648,28 @@ impl State {
             .map(|tb| tb.height as i32 + key_pad_y * 2 + key_gap)
             .unwrap_or(0);
 
-        // 「下一步：…」放在气泡最后一行——有下一步才画。
-        let next_hint = self
-            .queue
-            .front()
-            .and_then(|next| next.title.clone().or_else(|| next.text.clone()));
-        let hint_bitmap = next_hint
-            .filter(|text| !text.trim().is_empty())
-            .and_then(|text| {
-                render_text(
-                    &format!("下一步：{text}"),
-                    text_width,
-                    px(self.cfg.font_px - 2).max(8),
-                )
-            });
-        let hint_block = hint_bitmap
+        // 卡片底部一个动作按钮：还有下一步就是「下一步」，否则是「完成」。
+        // 两者只会存在一个——这是"什么时候该收尾"的唯一提示。
+        let action = if self.queue.is_empty() {
+            Action::Done
+        } else {
+            Action::Next
+        };
+        let button_label = match action {
+            Action::Next => "下一步",
+            Action::Done => "完成",
+        };
+        let button_bitmap = render_text(
+            button_label,
+            px(120).max(40) as u32,
+            px(self.cfg.font_px).max(8),
+        );
+        let button_pad_x = px(18);
+        let button_pad_y = px(8);
+        let button_gap = px(8);
+        let button_block = button_bitmap
             .as_ref()
-            .map(|tb| tb.height as i32 + key_gap)
+            .map(|tb| tb.height as i32 + button_pad_y * 2 + button_gap)
             .unwrap_or(0);
 
         // 卡片相对"所有目标的并集"摆放，多目标时不会只贴住其中一个。
@@ -672,7 +686,7 @@ impl State {
             .max()
             .unwrap_or(0);
         let body_h = text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
-        let content_h = title_block + body_h + key_block + hint_block;
+        let content_h = title_block + body_h + key_block + button_block;
 
         let card_placed = (content_w > 0).then(|| {
             place_preferring(
@@ -727,6 +741,25 @@ impl State {
             )
         });
 
+        let button_rects = card_rect.and_then(|card| {
+            button_bitmap.as_ref().map(|tb| {
+                let pill = Rect::new(
+                    card.x + pad,
+                    card.y + pad + title_block + body_h + key_block,
+                    tb.width as i32 + button_pad_x * 2,
+                    tb.height as i32 + button_pad_y * 2,
+                );
+                let text = Rect::new(
+                    pill.x + button_pad_x,
+                    pill.y + button_pad_y,
+                    tb.width as i32,
+                    tb.height as i32,
+                );
+                (offset(pill), offset(text))
+            })
+        });
+        let action_pill = button_rects.map(|(pill, _)| pill);
+
         let geom = Geom {
             union,
             card_radius: dip(CARD_RADIUS),
@@ -757,14 +790,8 @@ impl State {
                     ))
                 })
             }),
-            hint_at: card_rect.and_then(|card| {
-                hint_bitmap.as_ref().map(|_| {
-                    (
-                        (card.x + pad - union.x) as f32,
-                        (card.y + pad + title_block + body_h + key_block - union.y) as f32,
-                    )
-                })
-            }),
+            button: button_rects,
+
             title_at: card_rect.and_then(|card| {
                 title_bitmap.as_ref().map(|_| {
                     (
@@ -833,16 +860,13 @@ impl State {
                 );
             }
             for r in &plan.rects {
-                let window = MaskWindow::new(*r, dim_alpha, !p.click_through).map_err(internal)?;
+                let window = MaskWindow::new(*r, dim_alpha).map_err(internal)?;
                 masks.push(window);
             }
         }
 
         // 效果窗口必须**最后**创建：同一进程里后创建的 topmost 窗口在上面。
         // 反过来，遮罩会盖住卡片——看起来就像"气泡在遮罩后面"。
-        if p.click_advance {
-            set_click_targets(rects.to_vec());
-        }
 
         let active = Active {
             key: scene.key.clone(),
@@ -860,8 +884,8 @@ impl State {
             title: title_bitmap,
             text: text_bitmap,
             keycap: shortcut_bitmap,
-            hint: hint_bitmap,
-            click_advance: p.click_advance,
+            button: button_bitmap,
+            action,
             holes: holes.iter().map(|r| offset(*r)).collect(),
             hole_radius: dip(self.cfg.radius) + hole_pad as f32,
             dim: [0, 0, 0, dim_alpha],
@@ -890,7 +914,8 @@ impl State {
         let excluded = true;
         active.effect.set_excluded(excluded);
 
-        set_close_hit(close_hit_screen.map(offset));
+        set_stop_hit(close_hit_screen.map(offset));
+        set_action_hit(action_pill);
         let _ = take_dismiss_request();
 
         self.active = Some(active);
@@ -976,8 +1001,6 @@ fn to_show(base: &ShowParams, step: StepSpec) -> ShowParams {
         timeout: base.timeout,
         key: base.key.clone(),
         steps: Vec::new(),
-        click_through: base.click_through,
-        click_advance: base.click_advance,
     }
 }
 
@@ -1057,13 +1080,18 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
             }),
             _ => None,
         },
-        hint: match (&active.hint, active.geom.hint_at) {
-            (Some(tb), Some((x, y))) => Some(TextLayer {
-                rect: RectF::new(x, y, tb.width as f32, tb.height as f32),
-                mask: &tb.alpha,
-                mask_width: tb.width,
-                mask_height: tb.height,
-                color: active.theme.hint(),
+        button: match (&active.button, active.geom.button) {
+            (Some(tb), Some((pill, text))) => Some(Button {
+                rect: RectF::from_rect(pill),
+                radius: (pill.h as f32) / 2.0,
+                bg: active.theme.button_bg(active.accent),
+                text: TextLayer {
+                    rect: RectF::from_rect(text),
+                    mask: &tb.alpha,
+                    mask_width: tb.width,
+                    mask_height: tb.height,
+                    color: active.theme.button_text(),
+                },
             }),
             _ => None,
         },
@@ -1091,9 +1119,9 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
             _ => None,
         },
         progress,
-        close: active.geom.close.map(|c| CloseMark {
+        stop: active.geom.close.map(|c| StopMark {
             rect: RectF::from_rect(c),
-            color: active.theme.close(),
+            color: active.theme.stop(),
         }),
     };
 
@@ -1119,9 +1147,6 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
     // 给高亮区域一个近乎不可见的 alpha，点击才会落到我们身上，再转发给下面的应用。
     let width = active.geom.union.w;
     let height = active.geom.union.h;
-    if !active.click_advance {
-        return Some(frame);
-    }
     for target in &active.geom.targets {
         for y in target.y.max(0)..target.bottom().min(height) {
             for x in target.x.max(0)..target.right().min(width) {
@@ -1295,7 +1320,7 @@ pub fn run() -> i32 {
             }
             Event::Timer => state.tick(),
             // 多步流程里热键是"下一步"，没有下一步才关掉。
-            Event::Hotkey => state.advance(None),
+            Event::Hotkey => state.on_action(),
         }
         if state.should_exit {
             break;

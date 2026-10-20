@@ -39,11 +39,21 @@ impl Theme {
         }
     }
 
-    /// 卡片最后一行「下一步：…」的颜色，比正文淡。
-    pub fn hint(self) -> [u8; 4] {
+    /// 动作按钮的底色：直接用强调色。
+    pub fn button_bg(self, accent: [u8; 4]) -> [u8; 4] {
+        accent
+    }
+
+    /// 动作按钮上的文字颜色。
+    pub fn button_text(self) -> [u8; 4] {
+        [255, 255, 255, 255]
+    }
+
+    /// 停止按钮的颜色：比纯红柔和一点，不刺眼。
+    pub fn stop(self) -> [u8; 4] {
         match self {
-            Theme::Dark => [255, 255, 255, 150],
-            Theme::Light => [0, 0, 0, 140],
+            Theme::Dark => [235, 96, 88, 235],
+            Theme::Light => [214, 74, 66, 235],
         }
     }
 
@@ -58,13 +68,6 @@ impl Theme {
         match self {
             Theme::Dark => [255, 255, 255, 56],
             Theme::Light => [0, 0, 0, 36],
-        }
-    }
-
-    pub fn close(self) -> [u8; 4] {
-        match self {
-            Theme::Dark => [255, 255, 255, 150],
-            Theme::Light => [24, 24, 28, 150],
         }
     }
 }

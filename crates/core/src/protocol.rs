@@ -144,11 +144,7 @@ impl ErrorBody {
     }
 }
 
-fn yes() -> bool {
-    true
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ShowParams {
     /// 单个目标的屏幕物理像素 `[x, y, w, h]`。与 `targets` 至少给一个。
     #[serde(default)]
@@ -188,37 +184,6 @@ pub struct ShowParams {
     /// 多步流程：给出时按顺序播放，点中当前步骤的高亮区域就前进到下一步。
     #[serde(default)]
     pub steps: Vec<StepSpec>,
-    /// 遮罩区域是否放行点击。默认放行——用户仍能操作下面的应用。
-    #[serde(default = "yes")]
-    pub click_through: bool,
-    /// 点中高亮区域就前进到下一步。默认开启。
-    /// 那次点击会被收下，再由工具补发一次给下面的应用。
-    #[serde(default = "yes")]
-    pub click_advance: bool,
-}
-
-impl Default for ShowParams {
-    fn default() -> Self {
-        Self {
-            rect: None,
-            targets: Vec::new(),
-            capture: None,
-            space: None,
-            text: None,
-            title: None,
-            step: None,
-            shortcut: None,
-            placement: None,
-            dry_run: false,
-            effects: Vec::new(),
-            timeout: None,
-            key: None,
-            steps: Vec::new(),
-            // 默认行为：遮罩放行点击 + 点中高亮区域进入下一步。
-            click_through: true,
-            click_advance: true,
-        }
-    }
 }
 
 /// 多步流程里的一步。坐标、超时、效果等沿用外层参数。
@@ -279,6 +244,9 @@ pub struct StatusResult {
     #[serde(default)]
     pub hotkey: bool,
     pub scene: Option<SceneSummary>,
+    /// 上一次画面是怎么结束的："completed"（点了完成）或 "stopped"（点了停止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
 }
 
 /// 守护进程当前持有的截图。

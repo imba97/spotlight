@@ -27,9 +27,18 @@ pub struct Progress {
 
 /// 卡片右上角的关闭叉。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CloseMark {
+pub struct StopMark {
     pub rect: RectF,
     pub color: [u8; 4],
+}
+
+/// 卡片底部的动作按钮：一个胶囊 + 居中的文字。
+#[derive(Clone, Copy, Debug)]
+pub struct Button<'a> {
+    pub rect: RectF,
+    pub radius: f32,
+    pub bg: [u8; 4],
+    pub text: TextLayer<'a>,
 }
 
 /// 一张已经排版好的 8 位 alpha 掩膜。
@@ -72,10 +81,10 @@ pub struct Ctx<'a> {
     pub title: Option<TextLayer<'a>>,
     pub text: Option<TextLayer<'a>>,
     pub progress: Option<Progress>,
-    pub close: Option<CloseMark>,
+    pub stop: Option<StopMark>,
     pub keycap: Option<Keycap<'a>>,
-    /// 卡片最后一行提示，例如「下一步：…」。比正文淡。
-    pub hint: Option<TextLayer<'a>>,
+    /// 卡片底部的动作按钮（「下一步」/「完成」）。
+    pub button: Option<Button<'a>>,
     pub badges: &'a [Badge<'a>],
     /// 高亮洞的形状：遮罩是矩形挖的洞，圆角外侧要由这里补上遮罩色。
     pub holes: &'a [Hole],
@@ -230,8 +239,8 @@ pub fn render_frame(
         blend_text(&mut pixmap, &keycap.text);
     }
 
-    if let Some(hint) = ctx.hint {
-        blend_text(&mut pixmap, &hint);
+    if let Some(button) = ctx.button {
+        draw_button(&mut pixmap, &button);
     }
 
     // 遮罩是矩形洞，但环是圆角的：四个角里"圆角之外"的那几块必须补上遮罩色，
@@ -283,8 +292,8 @@ pub fn render_frame(
     if let Some(text) = ctx.text {
         blend_text(&mut pixmap, &text);
     }
-    if let Some(close) = ctx.close {
-        draw_close(&mut pixmap, &close);
+    if let Some(stop) = ctx.stop {
+        draw_stop(&mut pixmap, &stop);
     }
 
     Some(to_premultiplied_bgra(pixmap.data(), opacity))
@@ -335,27 +344,57 @@ fn draw_progress(pixmap: &mut Pixmap, card: &Card, progress: &Progress) {
     );
 }
 
-fn draw_close(pixmap: &mut Pixmap, close: &CloseMark) {
-    let r = close.rect;
-    if r.w < 4.0 || r.h < 4.0 {
+fn draw_stop(pixmap: &mut Pixmap, stop: &StopMark) {
+    let r = stop.rect;
+    if r.w < 6.0 || r.h < 6.0 {
         return;
     }
-    let pad = r.w * 0.26;
-    let mut builder = PathBuilder::new();
-    builder.move_to(r.x + pad, r.y + pad);
-    builder.line_to(r.x + r.w - pad, r.y + r.h - pad);
-    builder.move_to(r.x + r.w - pad, r.y + pad);
-    builder.line_to(r.x + pad, r.y + r.h - pad);
-    let Some(path) = builder.finish() else {
-        return;
-    };
+    let cx = r.x + r.w / 2.0;
+    let cy = r.y + r.h / 2.0;
+    let radius = r.w.min(r.h) / 2.0 - 1.0;
+
+    // 空心圆
+    let circle = PathBuilder::from_circle(cx, cy, radius);
     let stroke = Stroke {
         width: 1.6,
         line_cap: LineCap::Round,
         ..Stroke::default()
     };
-    let p = paint(close.color);
-    pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+    if let Some(path) = circle {
+        let p = paint(stop.color);
+        pixmap.stroke_path(&path, &p, &stroke, Transform::identity(), None);
+    }
+
+    // 内部实心方块——"停止"而不是"关闭"
+    let side = radius * 0.86;
+    if let Some(square) = tiny_skia::Rect::from_xywh(cx - side / 2.0, cy - side / 2.0, side, side) {
+        let mut builder = PathBuilder::new();
+        builder.push_rect(square);
+        if let Some(path) = builder.finish() {
+            let p = paint(stop.color);
+            pixmap.fill_path(
+                &path,
+                &p,
+                tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+    }
+}
+
+fn draw_button(pixmap: &mut Pixmap, button: &Button<'_>) {
+    if let Some(path) = sk_round_rect(button.rect, button.radius) {
+        let p = paint(button.bg);
+        pixmap.fill_path(
+            &path,
+            &p,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+    blend_text(pixmap, &button.text);
 }
 
 /// 把 alpha 掩膜以 `color` 合成进画布（预乘空间里做 over）。
