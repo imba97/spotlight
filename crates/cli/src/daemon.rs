@@ -714,16 +714,6 @@ impl State {
         });
         let card_rect = card_placed.map(|placed| placed.rect);
 
-        let debug = ShowDebug {
-            monitor: host.name.clone(),
-            scale: host.scale,
-            placement: card_placed
-                .map(|placed| format!("{:?}", placed.placement).to_lowercase())
-                .unwrap_or_else(|| "none".to_string()),
-            card: card_rect.map(|card| [card.x, card.y, card.w, card.h]),
-            font_px,
-        };
-
         let mut union = rects
             .iter()
             .fold(Rect::ZERO, |acc, r| acc.union(r.inflate(margin)));
@@ -753,6 +743,7 @@ impl State {
             )
         });
 
+        let mut button_screen: Option<Rect> = None;
         let button_rects = card_rect.and_then(|card| {
             button_bitmap.as_ref().map(|tb| {
                 // 按文字宽度自适应，左边和标题、正文对齐；不再铺满整行。
@@ -769,10 +760,22 @@ impl State {
                     tb.width as i32,
                     tb.height as i32,
                 );
+                button_screen = Some(pill);
                 (offset(pill), offset(text))
             })
         });
         let action_pill = button_rects.map(|(pill, _)| pill);
+
+        let debug = ShowDebug {
+            monitor: host.name.clone(),
+            scale: host.scale,
+            placement: card_placed
+                .map(|placed| format!("{:?}", placed.placement).to_lowercase())
+                .unwrap_or_else(|| "none".to_string()),
+            card: card_rect.map(|card| [card.x, card.y, card.w, card.h]),
+            button: button_screen.map(|r| [r.x, r.y, r.w, r.h]),
+            font_px,
+        };
 
         let geom = Geom {
             union,
@@ -1146,33 +1149,16 @@ fn render_active(active: &Active, opacity: f32) -> Option<Vec<u8>> {
         .map(|r| RectF::from_rect(*r))
         .collect();
 
-    // 先把要画的东西算出来，最后统一给高亮区域补一层 alpha=1 的"实体"。
-    // 注意必须在这里做：动画期间每帧重绘，在外面补会被下一帧覆盖掉。
-    let mut frame = render_frame(
+    // 高亮区域保持**完全透明**：分层窗口按像素 alpha 做命中测试，
+    // alpha=0 的像素点击会直接落到下面的应用上，这正是我们要的"亮区可点"。
+    render_frame(
         active.geom.union.w as u32,
         active.geom.union.h as u32,
         &targets,
         &active.effects,
         &ctx,
         opacity,
-    )?;
-
-    // 分层窗口按像素 alpha 做命中测试：透明的地方点击会直接穿过去。
-    // 给高亮区域一个近乎不可见的 alpha，点击才会落到我们身上，再转发给下面的应用。
-    let width = active.geom.union.w;
-    let height = active.geom.union.h;
-    for target in &active.geom.targets {
-        for y in target.y.max(0)..target.bottom().min(height) {
-            for x in target.x.max(0)..target.right().min(width) {
-                let index = ((y * width + x) * 4 + 3) as usize;
-                if index < frame.len() && frame[index] == 0 {
-                    frame[index] = 1;
-                }
-            }
-        }
-    }
-
-    Some(frame)
+    )
 }
 
 fn repaint(active: &Active, opacity: f32) {

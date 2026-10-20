@@ -284,6 +284,9 @@ pub struct ShowDebug {
     /// 卡片在屏幕坐标系下的矩形。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<[i32; 4]>,
+    /// 动作按钮在屏幕坐标系下的矩形（调试用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<[i32; 4]>,
     /// 字号（物理像素，已按 DPI 缩放）。
     pub font_px: i32,
 }
