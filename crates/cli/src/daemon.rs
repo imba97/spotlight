@@ -750,7 +750,7 @@ impl State {
                 let width = (tb.width as i32 + button_pad_x * 2).max(button_min_w);
                 let pill = Rect::new(
                     card.x + pad,
-                    card.y + pad + title_block + body_h + key_block,
+                    card.y + pad + title_block + body_h + key_block + button_gap,
                     width,
                     tb.height as i32 + button_pad_y * 2,
                 );
