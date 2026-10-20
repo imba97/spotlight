@@ -46,12 +46,12 @@ const CARD_PADDING: i32 = 12;
 /// 标题行与正文之间的间距。
 const TITLE_GAP: i32 = 4;
 /// 右侧多留一点，避免文字顶到关闭叉。
-const CARD_PADDING_RIGHT: i32 = 26;
+const CARD_PADDING_RIGHT: i32 = 34;
 const CARD_GAP: i32 = 12;
 
-const CLOSE_MARK: i32 = 12;
+const CLOSE_MARK: i32 = 16;
 const CLOSE_HIT: i32 = 28;
-const CLOSE_MARGIN: i32 = 8;
+const CLOSE_MARGIN: i32 = CARD_PADDING;
 
 const TICK_ACTIVE_MS: u32 = 100;
 /// 检测点击的轮询间隔；静态画面也按这个节奏醒来。
@@ -230,6 +230,11 @@ impl State {
             // 动画期间每帧重画；动画结束后只有倒计时进度条需要刷新。
             if !finished && (opacity < 1.0 || active.total.is_some()) {
                 repaint(active, opacity);
+                // 到 1.0 的这一帧必须画出来，否则画面会停在动画的倒数第二帧上
+                // （看着像"卡片有点透"的幽灵残影）。
+                if opacity >= 1.0 {
+                    active.animate = false;
+                }
             }
         }
 
@@ -664,9 +669,15 @@ impl State {
             px(120).max(40) as u32,
             px(self.cfg.font_px).max(8),
         );
-        let button_pad_x = px(18);
-        let button_pad_y = px(8);
+        let button_pad_x = px(14);
+        let button_pad_y = px(7);
         let button_gap = px(8);
+        // 按钮宽度有下限：只有两个字的「完成」不该缩成一小团，
+        // 和「下一步」放在一起时也该是同一个体量。
+        let button_min_w = px(88);
+        let button_w = button_bitmap
+            .as_ref()
+            .map(|tb| (tb.width as i32 + button_pad_x * 2).max(button_min_w));
         let button_block = button_bitmap
             .as_ref()
             .map(|tb| tb.height as i32 + button_pad_y * 2 + button_gap)
@@ -683,6 +694,7 @@ impl State {
             .map(|tb| tb.width as i32)
             .into_iter()
             .chain(text_bitmap.as_ref().map(|tb| tb.width as i32))
+            .chain(button_w)
             .max()
             .unwrap_or(0);
         let body_h = text_bitmap.as_ref().map(|tb| tb.height as i32).unwrap_or(0);
@@ -743,14 +755,16 @@ impl State {
 
         let button_rects = card_rect.and_then(|card| {
             button_bitmap.as_ref().map(|tb| {
+                // 按钮铺满卡片内宽：左右内边距必须和标题、正文对齐。
+                let width = (card.w - pad * 2).max(tb.width as i32 + button_pad_x * 2);
                 let pill = Rect::new(
                     card.x + pad,
                     card.y + pad + title_block + body_h + key_block,
-                    tb.width as i32 + button_pad_x * 2,
+                    width,
                     tb.height as i32 + button_pad_y * 2,
                 );
                 let text = Rect::new(
-                    pill.x + button_pad_x,
+                    pill.x + (width - tb.width as i32) / 2,
                     pill.y + button_pad_y,
                     tb.width as i32,
                     tb.height as i32,

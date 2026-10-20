@@ -19,9 +19,10 @@ pub enum Theme {
 
 impl Theme {
     pub fn card_bg(self) -> [u8; 4] {
+        // 卡片要"实"：留一点透明会让底下的文字透上来，看起来像脏了。
         match self {
-            Theme::Dark => [27, 27, 31, 240],
-            Theme::Light => [250, 250, 252, 246],
+            Theme::Dark => [27, 27, 31, 252],
+            Theme::Light => [250, 250, 252, 253],
         }
     }
 
@@ -39,14 +40,21 @@ impl Theme {
         }
     }
 
-    /// 动作按钮的底色：直接用强调色。
+    /// 动作按钮的底色：强调色的淡填充，让红色只做点缀。
     pub fn button_bg(self, accent: [u8; 4]) -> [u8; 4] {
-        accent
+        let alpha = match self {
+            Theme::Dark => 56,
+            Theme::Light => 44,
+        };
+        [accent[0], accent[1], accent[2], alpha]
     }
 
     /// 动作按钮上的文字颜色。
     pub fn button_text(self) -> [u8; 4] {
-        [255, 255, 255, 255]
+        match self {
+            Theme::Dark => [255, 255, 255, 242],
+            Theme::Light => [26, 26, 30, 242],
+        }
     }
 
     /// 停止按钮的颜色：比纯红柔和一点，不刺眼。
